@@ -8,7 +8,7 @@ Ubuntu preRecs
 
 1. **Install docker**: Docker install instructions [here](https://docs.docker.com/desktop/setup/install/linux/ubuntu/) 
 ```bash
-% install docker on whatever OS you are on
+# install docker on whatever OS you are on
 $ sudo apt-get update
 $ sudo apt-get install docker-compose-plugin
 ```
@@ -25,4 +25,13 @@ $ curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --de
 $ sudo apt-get update
 $ sudo apt-get install -y nvidia-container-toolkit
 ```
-3. 
+
+Project Environment
+---
+1. **start the container**
+```bash
+# from porject root
+docker compose up
+```
+---
+
