@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "gfnbpy"
+version = "0.1.0"
+description = ""
+authors = ["JayCeLeonardUO <jayce@uoregon.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "3.11.*"
+bpy = "^4.3.0"
+numpy = "<2.0"
+pytest = "^8.3.3"
+pydantic = "^2.10.2"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
