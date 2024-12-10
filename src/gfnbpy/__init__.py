@@ -1,7 +1,17 @@
 import bpy
+import numpy as np
 
-def create_cube():
-    bpy.ops.mesh.primitive_cube_add(size=2, enter_editmode=False, align='WORLD', location=(0, 0, 0))
-    cube = bpy.context.object
-    cube.name = "MyCube"
-    return cube
+# named for "art" themeing
+armature = {
+    "rectangle":0
+}
+
+patches = {
+    "Square": 0,
+    "triangle":1,
+    "Circle": 2,
+    "Square": 4
+}
+
+def draw_face():
+    print("working")
