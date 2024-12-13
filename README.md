@@ -1,5 +1,5 @@
 # Blender-ML-Thesis
-My master's thesis repo
+This is a WIP. no demos yet
 
 ## Setup
 
