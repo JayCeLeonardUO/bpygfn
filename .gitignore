@@ -16,3 +16,4 @@ _site/
 # counterproductive to check this file into the repository.
 # Details at https://github.com/github/pages-gem/issues/768
 Gemfile.lock
+exp-scripts/mlruns/0/235943ff6be247ec82ed18a70d6e65f3/metrics/foo

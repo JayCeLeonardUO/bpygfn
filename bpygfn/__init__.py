@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import torch
 from gfn.env import DiscreteEnv
+import numpy as np
 
 
 @dataclass
@@ -76,4 +77,6 @@ class ActionEncoder:
         ]
 
 class testEnv(DiscreteEnv):
-    pass
+    def __init__(self, n_actions, s0, sf = None, device_str = None, preprocessor = None):
+        super().__init__(n_actions, s0, sf, device_str, preprocessor)
+    
