@@ -684,6 +684,17 @@ files = [
 ]
 
 [[package]]
+name = "einops"
+version = "0.8.0"
+description = "A new flavour of deep learning operations"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "einops-0.8.0-py3-none-any.whl", hash = "sha256:9572fb63046264a862693b0a87088af3bdc8c068fde03de63453cbbde245465f"},
+    {file = "einops-0.8.0.tar.gz", hash = "sha256:63486517fed345712a8385c100cb279108d9d47e6ae59099b07657e983deae85"},
+]
+
+[[package]]
 name = "executing"
 version = "2.1.0"
 description = "Get the currently executing AST node of a frame, and other information"
@@ -3288,6 +3299,43 @@ opt-einsum = ["opt-einsum (>=3.3)"]
 optree = ["optree (>=0.12.0)"]
 
 [[package]]
+name = "torchgfn"
+version = "1.1.1"
+description = "A torch implementation of GFlowNets"
+optional = false
+python-versions = ">=3.10,<4.0"
+files = [
+    {file = "torchgfn-1.1.1-py3-none-any.whl", hash = "sha256:225ed0198c27a88f58bff20f7a5c108ed41fa031ee2f2b07073e2261bfa98284"},
+    {file = "torchgfn-1.1.1.tar.gz", hash = "sha256:ce4aed6c46e7f3c161169bbe6d9cd0d13321bce1ff0cdec7abc26e6fde1cf21e"},
+]
+
+[package.dependencies]
+einops = ">=0.6.1"
+numpy = ">=1.21.2"
+torch = ">=1.9.0"
+torchtyping = ">=0.1.4"
+
+[package.extras]
+all = ["black (==22.3.0)", "myst-parser", "pre-commit", "pytest", "renku-sphinx-theme", "scikit-learn", "scipy", "sphinx", "sphinx-autoapi", "sphinx-math-dollar", "sphinx_rtd_theme", "tox", "tqdm", "wandb"]
+dev = ["black (==22.3.0)", "gitmopy", "myst-parser", "pre-commit", "pytest", "renku-sphinx-theme", "sphinx", "sphinx-autoapi", "sphinx-math-dollar", "sphinx_rtd_theme", "tox"]
+scripts = ["scikit-learn", "scipy", "tqdm", "wandb"]
+
+[[package]]
+name = "torchtyping"
+version = "0.1.5"
+description = "Runtime type annotations for the shape, dtype etc. of PyTorch Tensors."
+optional = false
+python-versions = ">=3.7.0"
+files = [
+    {file = "torchtyping-0.1.5-py3-none-any.whl", hash = "sha256:429d76e16b08a2409226320565d557d4ba3d0d6f544db3e5dc4cf690ffa2a3bd"},
+    {file = "torchtyping-0.1.5.tar.gz", hash = "sha256:fb51e1792536223e2497b1e106ed0cbe681f7324044599cb718d03be3f2b3851"},
+]
+
+[package.dependencies]
+torch = ">=1.7.0"
+typeguard = ">=2.11.1,<3"
+
+[[package]]
 name = "tornado"
 version = "6.4.2"
 description = "Tornado is a Python web framework and asynchronous networking library, originally developed at FriendFeed."
@@ -3364,6 +3412,21 @@ filelock = "*"
 build = ["cmake (>=3.20)", "lit"]
 tests = ["autopep8", "flake8", "isort", "llnl-hatchet", "numpy", "pytest", "scipy (>=1.7.1)"]
 tutorials = ["matplotlib", "pandas", "tabulate"]
+
+[[package]]
+name = "typeguard"
+version = "2.13.3"
+description = "Run-time type checker for Python"
+optional = false
+python-versions = ">=3.5.3"
+files = [
+    {file = "typeguard-2.13.3-py3-none-any.whl", hash = "sha256:5e3e3be01e887e7eafae5af63d1f36c849aaa94e3a0112097312aabfa16284f1"},
+    {file = "typeguard-2.13.3.tar.gz", hash = "sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4"},
+]
+
+[package.extras]
+doc = ["sphinx-autodoc-typehints (>=1.2.0)", "sphinx-rtd-theme"]
+test = ["mypy", "pytest", "typing-extensions"]
 
 [[package]]
 name = "typing-extensions"
@@ -3655,4 +3718,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "3.11.*"
-content-hash = "90cba430925fd9a94154e125d25f8632ec81c25028052b0bb582de13e507e35e"
+content-hash = "74f6acce65b0b6be46fac8c8c1c47e3044eb0e4053b1e3730449fad77eaf0414"
