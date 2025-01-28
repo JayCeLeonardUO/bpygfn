@@ -1,25 +1,33 @@
 # %%
 from typing import Literal
-from gfn.states import States
+
 import torch
-from gfn.containers import Trajectories, Transitions
 from gfn.actions import Actions
+from gfn.containers import Trajectories, Transitions
 from gfn.env import DiscreteEnv
+from gfn.modules import DiscretePolicyEstimator
 from gfn.preprocessors import EnumPreprocessor
+from gfn.states import DiscreteStates, States
+from gfn.utils.modules import DiscreteUniform, Tabular
 from torch import TensorType, nn
-
-
+from gfn.gflownet import TBGFlowNet
+from gfn.utils.modules import MLP
+#%%
 class SimpleEnv(DiscreteEnv):
+    """
+    holds all the information I will 'apparently' need for
+    """
     def __init__(
         self,
         ndim: int,
-        n_actions,
+        height: int,
         sf=None,
         preprocessor=None,
         device_str: Literal["cpu", "cuda"] = "cpu",
         preprocessor_name: Literal["KHot", "OneHot", "Identity", "Enum"] = "KHot",
     ):
         self.ndim = 10
+        self.height = height
         s0 = torch.zeros(ndim, dtype=torch.long, device=torch.device(device_str))
         device_str = "cuda"
         torch.zeros(self.ndim, dtype=torch.long, device=torch.device(device_str))
@@ -30,90 +38,81 @@ class SimpleEnv(DiscreteEnv):
             sf=sf,
             device_str=device_str,
             preprocessor=preprocessor,
-        )        
-        
+        )
+
+    def get_states_indices(self, states: DiscreteStates) -> torch.Tensor:
+        """
+        for some reason I have to set the behavior of states in the env class .... wtf
+        """
+        states_raw = states.tensor
+        canonical_base = self.height ** torch.arange(
+            self.ndim - 1, -1, -1, device=states_raw.device
+        )
+        indices = (canonical_base * states_raw).sum(-1).long()
+        assert indices.shape == states.batch_shape
+        return indices
+
     def step(self, states: States, actions: Actions) -> torch.Tensor:
         """
-        
+        Args:
+            states: The current states.
+            actions: The actions to take
         """
-        return super().step(states, actions)
+        
+        new_states_tensor = states.tensor.scatter(-1, actions.tensor, 1, reduce="add")
+        assert new_states_tensor == states.tensor.shape
+        return new_states_tensor
+
     def backward_step(self, states: States, actions: Actions) -> torch.Tensor:
         return super().backward_step(states, actions)
+
     def update_masks(self, states: States) -> None:
         """
-        based on the current mast. mask out invalid selections for step
+        based on the current mask. mask out invalid selections for step
         """
+        # update the forwards and backwards masks here
+        print(states)
         return super().update_masks(states)
 
-"""
-testing strings
-"""
-if __name__ == "__main__":
-    env = SimpleEnv(ndim=10, n_actions=11)
-    print("SimpleEnv initialized with ndims:", env.ndim)
+    def reward(self, final_states: States) -> torch.Tensor:
+        """
+        this will be a script from the blender_helpers lib
+        """
+        return super().reward(final_states)
+
 
 # %%
+def create_gflownet(env: DiscreteEnv, hidden_dim,n_hidden):
+    pf_module = MLP(
+        input_dim=env.preprocessor.output_dim,
+        output_dim=env.n_actions,
+        hidden_dim=hidden_dim,
+        n_hidden_layers=n_hidden,
+    )
 
+    pb_module = DiscreteUniform(env.n_actions - 1)
 
-class SimpleSmileFlowModel(nn.Module):
-    """
-    - 6 layers (one for each face part)
-    """
+    pf_estimator = DiscretePolicyEstimator(
+        module=pf_module,
+        n_actions=env.n_actions,
+        preprocessor=env.preprocessor,
+    )
 
-    def __init__(self, num_hid, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.mlp = nn.Sequential(
-            nn.Linear(6, num_hid), nn.LeakyReLU(), nn.Linear(num_hid, 6)
-        )
+    pb_estimator = DiscretePolicyEstimator(
+        module=pb_module,
+        n_actions=env.n_actions,
+        is_backward=True,
+        preprocessor=env.preprocessor,
+    )
 
-    def forward(self, x):
-        return self.mlp(x).exp()
+    gflownet = TBGFlowNet(
+        pf=pf_estimator,
+        pb=pb_estimator,
+    )
 
+    return gflownet
 
-class SimpleSequenceFlowModel(nn.Module):
-    """
-    the seq_len would be arbitraty
-    """
-
-    def __init__(self, num_hid, seq_len, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-
-class SimpleTransitions(Transitions):
-    def __init__(
-        self,
-        env,
-        states=None,
-        actions=None,
-        is_done=None,
-        next_states=None,
-        is_backward=False,
-        log_rewards=None,
-        log_probs=None,
-    ):
-        super().__init__(
-            env,
-            states,
-            actions,
-            is_done,
-            next_states,
-            is_backward,
-            log_rewards,
-            log_probs,
-        )
-
-
-class SimpleTrajectories(Trajectories):
-    def __init__(
-        self,
-        env,
-        states=None,
-        actions=None,
-        when_is_done=None,
-        is_backward=False,
-        log_rewards=None,
-        log_probs=None,
-    ):
-        super().__init__(
-            env, states, actions, when_is_done, is_backward, log_rewards, log_probs
-        )
+if __name__ == "__main__":
+    env = SimpleEnv(ndim=9, height=10)
+    print("SimpleEnv initialized with ndims:", env.ndim)
+# %%
