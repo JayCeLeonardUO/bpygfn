@@ -1,6 +1,8 @@
 # %%
+from inspect import indentsize
 from typing import Literal
 
+from gfn import preprocessors
 import torch
 from gfn.actions import Actions
 from gfn.containers import Trajectories, Transitions
@@ -12,11 +14,14 @@ from gfn.utils.modules import DiscreteUniform, Tabular
 from torch import TensorType, nn
 from gfn.gflownet import TBGFlowNet
 from gfn.utils.modules import MLP
-#%%
+
+
+# %%
 class SimpleEnv(DiscreteEnv):
     """
     holds all the information I will 'apparently' need for
     """
+
     def __init__(
         self,
         ndim: int,
@@ -58,7 +63,7 @@ class SimpleEnv(DiscreteEnv):
             states: The current states.
             actions: The actions to take
         """
-        
+
         new_states_tensor = states.tensor.scatter(-1, actions.tensor, 1, reduce="add")
         assert new_states_tensor == states.tensor.shape
         return new_states_tensor
@@ -71,7 +76,6 @@ class SimpleEnv(DiscreteEnv):
         based on the current mask. mask out invalid selections for step
         """
         # update the forwards and backwards masks here
-        print(states)
         return super().update_masks(states)
 
     def reward(self, final_states: States) -> torch.Tensor:
@@ -80,9 +84,63 @@ class SimpleEnv(DiscreteEnv):
         """
         return super().reward(final_states)
 
+#%%
+def examples_states(
+    height: int = 10, ndim: int = 10, device: torch.device = torch.device("cpu")
+):
+    """
+    This will be a constructions of 7 numbers
+    think of the addition of a state as a step is a direction in a hyper grid
+    This is why I will have to calculate masks for each step
+    """
+    # construct some states to pass into preproc
+    
+    # are teh trajectories not an array of steps
+    canonical_base = height ** torch.arange(ndim - 1, -1, -1, device=device)
+
+    # so is this not enumeration the actions?
+    def preproc_fn(states: DiscreteStates) -> torch.Tensor:
+        data = states.tensor
+        indices = (canonical_base * data).sum(-1).long()
+        return indices 
+
+    def reward(final_states):
+        pass
+        # rewards a batch of trajectories
+        # reward bands
+
+        """
+        cos
+            R0 + # base
+            (0.25 < ax) * R1 prod mastk out ones that dont meet critieria
+            ((0.3<ax)) * (ax *) ... second ring
+        In the cosine case we are rewarding
+        """
+    """
+    myStates = ["one", "two", "three"]
+    n_actions = len(myStates)
+    device_str = "cpu"
+    device = torch.device(device_str)
+    s0 = []  # source state
+    sf = [-1]  # I assme this is the sink
+    # EnumPreprocessor
+    """
 
 # %%
-def create_gflownet(env: DiscreteEnv, hidden_dim,n_hidden):
+def create_gflownet(env: SimpleEnv, hidden_dim, n_hidden):
+    """
+    - gflownet needs
+    - forward prob
+    - backwards -  prob
+    - state information
+    """
+
+    def get_states_indices(states: DiscreteStates) -> torch.Tensor:
+        return torch.tensor([-1])
+
+    # i guess pyright is not seeing descrete states inherit from states
+    preprocessor = EnumPreprocessor(get_states_indices=get_states_indices)  # pyright: ignore
+
     pf_module = MLP(
         input_dim=env.preprocessor.output_dim,
         output_dim=env.n_actions,
@@ -104,13 +162,14 @@ def create_gflownet(env: DiscreteEnv, hidden_dim,n_hidden):
         is_backward=True,
         preprocessor=env.preprocessor,
     )
-
+    # env is not even used in the loss??!?!? then what is the point
     gflownet = TBGFlowNet(
         pf=pf_estimator,
         pb=pb_estimator,
     )
 
     return gflownet
+
 
 if __name__ == "__main__":
     env = SimpleEnv(ndim=9, height=10)
