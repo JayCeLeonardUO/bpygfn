@@ -1,12 +1,13 @@
-from re import I
-import pytest
-from bpygfn.base import SuperSimpleEnv
-from gfn.preprocessors import Preprocessor, EnumPreprocessor
-from gfn.states import States, DiscreteStates
-import torch
-from typing import Optional, Tuple, Union, Iterable, Iterator,List
+from typing import Iterable, Iterator, List
+
 import numpy as np
 import numpy.typing as npt
+import pytest
+import torch
+from gfn.preprocessors import EnumPreprocessor
+from gfn.states import DiscreteStates, States
+
+from bpygfn.base import SuperSimpleEnv
 
 
 @pytest.fixture
@@ -51,7 +52,7 @@ def generate_dummy_compositions(
         yield composition
 
 
-def dummy_mask_logic(state: States):
+def expected_mask_logic(state: States):
     def get_most_resent_state(composition) -> np.ndarray:
         """
         given a compostion.
@@ -74,7 +75,6 @@ def dummy_mask_logic(state: States):
         # no double actions so just negate the most resent state
         return last_action ^ last_action
 
-
     dummy_mask = valid_trasitions(get_most_resent_state(state))
     return dummy_mask
 
@@ -83,23 +83,24 @@ def dummy_mask_logic(state: States):
 def dummy_actions_n_actions_10():
     return np.identity(10)
 
-def test_SuperSimpleEnv_proprocessors(dummy_actions_n_actions_10):
-    NDIM = 2
+
+def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
+    NDIM = 4
     HEIGHT = 3
     BATCH_SIZE = 3
     SEED = 42
-    
+
     def test_actions_and_states(dummy_actions_n_actions_10):
         N_ACTIONS = 10
         BATCH_SHAPE = 10
 
-        dummy_comps: List[List[int]] = [[1,0,0], [1,1,0], [2,1,0]]
+        dummy_comps: List[List[int]] = [[1, 0, 0], [1, 1, 0], [2, 1, 0]]
 
         # Convert list to tensor
         tensor: torch.Tensor = torch.tensor(dummy_comps)
-        
+
         ds = DiscreteStates(tensor)
-        
+
         # succsesfully sep
         return ds
 
@@ -116,6 +117,7 @@ def test_SuperSimpleEnv_proprocessors(dummy_actions_n_actions_10):
         canonical_base = HEIGHT ** torch.arange(
             NDIM - 1, -1, -1, device=states_raw.device
         )
+
         indices = (canonical_base * states_raw).sum(-1).long()
         assert indices.shape == states.batch_shape
         return indices
@@ -124,15 +126,15 @@ def test_SuperSimpleEnv_proprocessors(dummy_actions_n_actions_10):
         get_states_indices=get_states_indices,
     )
 
+    s0 = torch.zeros(NDIM, dtype=torch.long, device=torch.device("cpu"))
     env = SuperSimpleEnv(
-        n_actions=4, s0=torch.tensor([0]), state_shape=(1,), preprocessor=preproc, height=HEIGHT
+        n_actions=4,
+        s0=s0,
+        state_shape=(NDIM,),
+        preprocessor=preproc,
+        height=HEIGHT,
+        device_str="cpu",
     )
-
-    passing_actions_lists = [
-        [0, 1, 2],
-        [2, 0, 1],
-        [2, 0, 1],
-    ]
 
     # Utilities.
     def format_tensor(list_, discrete=True):
@@ -147,20 +149,33 @@ def test_SuperSimpleEnv_proprocessors(dummy_actions_n_actions_10):
 
     # Testing the backward method from a batch of random (seeded) state.
     states = env.reset(
-        batch_shape=(NDIM, HEIGHT), random=True, seed=SEED  # pyright: ignore
+        batch_shape=(NDIM),
     )
 
-    
-    print(f"reset : {states.s0}\n")
+    # this is yanked from hypergrid.py
+    # s0 = torch.zeros(NDIM, dtype=torch.long, device=torch.device("cuda"))
+    actions = env.actions_from_tensor(format_tensor([2, 1, 0, 1]))
 
-         
-    for actions_list in passing_actions_lists:
-        actions = env.actions_from_tensor(format_tensor(actions_list))
+    print(f"\nstate 0: {s0}")
+    print(f"Reset states: {states.s0}")
+    print(f"state Tensor: {states.tensor}")
+    print(f"Actions: {actions.tensor}")
 
-        # this will apply the actions to the states
-        # there the initial statesd of s0 is the max depth 
-        steps = env.step(states, actions)
-        # for this
-        print(steps)
-        print(actions.dummy_action)
-        # states = env._step(states, actions)  # pyright: ignore
+    steps = env.step(states=states, actions=actions)
+
+    print(f"Steps: {steps}")
+
+
+#    for actions_list in passing_actions_lists:
+#        # WHAT PATTERN IS THIS SHIT????
+#        actions = env.actions_from_tensor(format_tensor(actions_list))
+#
+#        # this process is such a night mare
+#        # 1. you have to pass in a tensor of actions, to get actions?
+#        # 2. then you have to pass in states and actions BACK INTO ENV?!?!?!?
+#        steps = env.step(states, actions)
+#        print(steps)
+#
+#
+#
+#        # verify that step applied the logic that I want

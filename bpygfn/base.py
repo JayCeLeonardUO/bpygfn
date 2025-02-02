@@ -1,19 +1,10 @@
-# %%
-from inspect import indentsize
-from typing import Literal, Tuple, Optional, Union
+from typing import Optional, Tuple, Union
 
-from gfn.preprocessors import Preprocessor
 import torch
 from gfn.actions import Actions
-from gfn.containers import Trajectories, Transitions
 from gfn.env import DiscreteEnv
-from gfn.modules import DiscretePolicyEstimator
-from gfn.preprocessors import EnumPreprocessor
-from gfn.states import DiscreteStates, States
-from gfn.utils.modules import DiscreteUniform, Tabular
-from torch import TensorType, nn
-from gfn.gflownet import TBGFlowNet
-from gfn.utils.modules import MLP
+from gfn.preprocessors import Preprocessor
+from gfn.states import States
 
 
 class SuperSimpleEnv(DiscreteEnv):
@@ -52,8 +43,8 @@ class SuperSimpleEnv(DiscreteEnv):
 
         Returns the new states after taking the actions as a tensor of shape (*batch_shape, *state_shape).
         """
-
         new_states_tensor = states.tensor.scatter(-1, actions.tensor, 1, reduce="add")
+        assert new_states_tensor.shape == states.tensor.shape
         return new_states_tensor
 
     def is_action_valid(
@@ -68,12 +59,9 @@ class SuperSimpleEnv(DiscreteEnv):
         return super().update_masks(states)
 
     def make_random_states_tensor(self, batch_shape: Tuple[int, ...]) -> torch.Tensor:
-        """Creates a batch of random states.
-
-        Args:
-            batch_shape: Tuple indicating the shape of the batch.
-
-        Returns the batch of random states as tensor of shape (*batch_shape, *state_shape).
+        """ this does not quite work for this env
+        Random states make no sense in this case....
+        make sure this is not called by the gflow net
         """
         return torch.randint(
             0, self.height, batch_shape + self.s0.shape, device=self.device
@@ -105,12 +93,10 @@ class SuperSimpleEnv(DiscreteEnv):
         states = self.states_from_batch_shape(
             batch_shape=batch_shape, random=random, sink=sink
         )
+
         self.update_masks(states)
 
         return states
 
     # env = SuperSimpleEnvSimpleEnv(ndim=9, height=10)
     # print("SimpleEnv initialized with ndims:", env.ndim)
-
-
-# %%
