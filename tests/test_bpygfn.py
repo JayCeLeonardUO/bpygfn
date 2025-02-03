@@ -1,11 +1,10 @@
-from typing import Iterable, Iterator, List
+from typing import Iterable, Iterator
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 import torch
-from gfn.preprocessors import EnumPreprocessor
-from gfn.states import DiscreteStates, States
+from gfn.states import States
 
 from bpygfn.base import SuperSimpleEnv
 
@@ -84,55 +83,28 @@ def dummy_actions_n_actions_10():
     return np.identity(10)
 
 
+import pudb
+
+pudb.set_trace()
+
+
 def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
-    NDIM = 4
-    HEIGHT = 3
-    BATCH_SIZE = 3
-    SEED = 42
+    SEED = 1234
 
-    def test_actions_and_states(dummy_actions_n_actions_10):
-        N_ACTIONS = 10
-        BATCH_SHAPE = 10
+    """K Hot Preprocessor for environments with enumerable states (finite number of states) with a grid structure.
 
-        dummy_comps: List[List[int]] = [[1, 0, 0], [1, 1, 0], [2, 1, 0]]
+    Args:
+        height (int): number of unique values per dimension.
+        ndim (int): number of dimensions.
+    """
 
-        # Convert list to tensor
-        tensor: torch.Tensor = torch.tensor(dummy_comps)
+    # each each "dimention" will have different heigh of states...
+    # rotation is rotation, is will have a different height say the volume dimention
+    # enumeration it the best
+    # - sate dimentions are not uniform in possable values
+    # - states are discrete
 
-        ds = DiscreteStates(tensor)
-
-        # succsesfully sep
-        return ds
-
-    def get_states_indices(states: States) -> torch.Tensor:
-        """Get the indices of the states in the canonical ordering.
-
-        Args:
-            states: The states to get the indices of.
-
-        Returns the indices of the states in the canonical ordering as a tensor of shape `batch_shape`.
-        """
-        states_raw = states.tensor
-
-        canonical_base = HEIGHT ** torch.arange(
-            NDIM - 1, -1, -1, device=states_raw.device
-        )
-
-        indices = (canonical_base * states_raw).sum(-1).long()
-        assert indices.shape == states.batch_shape
-        return indices
-
-    preproc = EnumPreprocessor(
-        get_states_indices=get_states_indices,
-    )
-
-    s0 = torch.zeros(NDIM, dtype=torch.long, device=torch.device("cpu"))
     env = SuperSimpleEnv(
-        n_actions=4,
-        s0=s0,
-        state_shape=(NDIM,),
-        preprocessor=preproc,
-        height=HEIGHT,
         device_str="cpu",
     )
 
@@ -147,16 +119,22 @@ def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
         else:
             return torch.tensor(list_, dtype=torch.float)
 
-    # Testing the backward method from a batch of random (seeded) state.
-    states = env.reset(
-        batch_shape=(NDIM),
+    # random_states =
+    random_states = env.reset(
+        batch_shape=10,
+        random=True,
+        seed=SEED,  # pyright: ignore
     )
+    env.preprocessor.preprocess(random_states)
 
+    print(random_states)
+
+    assert True
+    # preprocessed_grid = env.preprocessor.preprocess(random_states)
+    """
     # this is yanked from hypergrid.py
-    # s0 = torch.zeros(NDIM, dtype=torch.long, device=torch.device("cuda"))
     actions = env.actions_from_tensor(format_tensor([2, 1, 0, 1]))
 
-    print(f"\nstate 0: {s0}")
     print(f"Reset states: {states.s0}")
     print(f"state Tensor: {states.tensor}")
     print(f"Actions: {actions.tensor}")
@@ -164,6 +142,7 @@ def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
     steps = env.step(states=states, actions=actions)
 
     print(f"Steps: {steps}")
+    """
 
 
 #    for actions_list in passing_actions_lists:
