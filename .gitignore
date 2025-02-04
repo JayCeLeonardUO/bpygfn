@@ -20,3 +20,7 @@ exp-scripts/mlruns/
 */__pycache__
 bpygfn/__pycache__/*
 bpygfn/__pycache__/base.cpython-311.pyc
+*.xml
+*.iml
+*.pyc
+*.pyc

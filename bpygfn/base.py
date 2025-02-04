@@ -93,6 +93,10 @@ class SuperSimpleEnv(DiscreteEnv):
         print("this was called")
         return torch.Tensor([-1])
 
+    import pudb
+
+    pudb.set_trace()
+
     # there is no way around it... I have to do the make indecies and make class fn's FML
     def get_states_indices(self, states: States) -> torch.Tensor:
         """Get the indices of the states in the canonical ordering.
@@ -102,7 +106,6 @@ class SuperSimpleEnv(DiscreteEnv):
 
         Returns the indices of the states in the canonical ordering as a tensor of shape `batch_shape`.
         """
-
         # is this
         raise NotImplementedError
         return torch.Tensor([-1])
