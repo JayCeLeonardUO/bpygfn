@@ -1,11 +1,14 @@
 from collections import defaultdict
-from typing import Optional, Tuple
+from typing import Callable, Dict, Iterator, Optional, Union
 
 import torch
 from gfn.actions import Actions
 from gfn.env import DiscreteEnv
-from gfn.preprocessors import EnumPreprocessor
-from gfn.states import DiscreteStates, States
+from gfn.states import States
+from torch.types import Number
+
+QUATERNION_SIZE = 4
+VOLUME_SIZE = 1
 
 
 def my_rotate(target):
@@ -13,125 +16,122 @@ def my_rotate(target):
     return
 
 
-"""
-class MyState:
-    roation = ["i", "j", "k"]
-    actionHistory: List["MyState"] = []
-
-    def __init__(self):
-        return
-
-    @property
-    def to_tensor(self):
-        return torch.Tensor([-1])
-"""
-
-"""
-When a key that is not in the dict is called it will just result in the
-Exit action
-"""
+# Define a type alias for our action function
+StateFunction = Callable[[torch.Tensor], torch.Tensor]
+ActionList = Dict[Union[int, Number], StateFunction]
 
 
-def temp_exit():
-    return None
+def move_forward(state: torch.Tensor) -> torch.Tensor:
+    new_state = state.clone()
+    new_state[3] = 1.0
+    return new_state
 
 
-# dynamic list of pointers to actions
-# TODO: this is a global ... fix it
-actions_dictionary: dict = defaultdict(
-    temp_exit, {"printhello": lambda: print("hello"), "rot": my_rotate}
-)
+def move_backward(state: torch.Tensor) -> torch.Tensor:
+    new_state = state.clone()
+    new_state[3] = -1.0
+    return new_state
 
 
-class myAction(DiscreteStates):
-    def __init__(self):
-        pass
+def turn_left(state: torch.Tensor) -> torch.Tensor:
+    new_state = state.clone()
+    new_state[0:3] = torch.tensor([0.0, -1.0, 0.0])
+    return new_state
 
 
-# this will be the fn that the preproc class gets
-def my_calc_ind(states: States) -> torch.Tensor:
-    print(states)
-    return torch.Tensor([-1])
+ACTION_LIST: ActionList = {
+    0: move_forward,
+    1: move_backward,
+    2: turn_left,
+}
+
+
+def action_generator(
+    states: torch.Tensor, actions: torch.Tensor, action_list
+) -> Iterator[torch.Tensor]:
+    """
+    Generates new states by applying actions one at a time
+
+    Args:
+        states: torch.Tensor of shape (batch_size, state_dim)
+        actions: torch.Tensor of shape (batch_size,)
+
+    Yields:
+        torch.Tensor of shape (state_dim,) for each state
+    """
+    for state, action in zip(states, actions):
+        yield action_list[action.item()](state)
 
 
 class SuperSimpleEnv(DiscreteEnv):
     # should take in the actions dict
     def __init__(
         self,
-        device_str: Optional[str] = None,
+        history_size: int,
+        action_list: ActionList = ACTION_LIST,
+        device_str: Optional[str] = "cpu",
     ):
         """
-        Args:
-            TODO - n_actions is hard coded... fix it
-            dummy_action, I have no idea what this is or why it is here
+        NOTE: the states that this env output are what the MLP will see
+        As in --they get put directally into the model with no preprocessing
+
+        Arguments:
+            n_actions: int - number of action
+            history_size: int, - len of the history of prev actions you want in the state
+            action_list: ActionList, - dict of fn pointers, this internal defindes n_actions
+            device_str: Optional[str] = None, - can be "cpu" or "cuda"
+
         """
+        action_shape = (1,)
+        n_actions = len(action_list)
+        state_shape = ((QUATERNION_SIZE + VOLUME_SIZE + (n_actions * history_size)),)
+        s0 = torch.zeros(state_shape)
+        self.action_list = defaultdict(None, action_list)
 
-        preprocessor = EnumPreprocessor(self.get_states_indices)
-        # should not_ be passed in
-        state_shape: Tuple = (1,)
+        # Pre-define the vectorized step function
+        def apply_single_step(
+            state: torch.Tensor, action: torch.Tensor
+        ) -> torch.Tensor:
+            return self.action_list[action.item()](state)
 
-        # this will be relevent
-        # exit_action = torch.Tensor([-1])  # actions_dictionary['exit']
-
-        # value for undefined actions?
-        # dummy_action: torch.Tensor = torch.Tensor([-1])
-
-        s0 = torch.Tensor([0])
-        sf = torch.Tensor([0])
-
+        self.batch_step = torch.vmap(apply_single_step, in_dims=(0, 0))
         super().__init__(
-            n_actions=len(actions_dictionary),
+            n_actions=len(self.action_list),
             s0=s0,
             state_shape=state_shape,
-            sf=sf,
             device_str=device_str,
-            preprocessor=preprocessor,
+            action_shape=action_shape,
         )
 
-    def make_random_states_tensor(self, batch_shape: Tuple) -> torch.Tensor:
-        """Optional method inherited by all States instances to emit a random tensor."""
-        print("this was called")
-        return torch.Tensor([-1])
-
-    import pudb
-
-    pudb.set_trace()
-
-    # there is no way around it... I have to do the make indecies and make class fn's FML
-    def get_states_indices(self, states: States) -> torch.Tensor:
-        """Get the indices of the states in the canonical ordering.
-
-        Args:
-            states: The states to get the indices of.
-
-        Returns the indices of the states in the canonical ordering as a tensor of shape `batch_shape`.
-        """
-        # is this
-        raise NotImplementedError
-        return torch.Tensor([-1])
+    def apply_batched_actions(
+        self, states: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.stack(list(action_generator(states, actions, self.action_list)))
 
     def step(self, states: States, actions: Actions) -> torch.Tensor:
         """Take a step in the environment.
-        The Actions in this case will be a tensor of operations to apply to the batch
 
-        As i Under stand it,
-
-        - Step is trajectory egnostic
-
-        - the trainin proses is applying actions to states and seeing which ones lead to the final step
-
-        TODO for now just to quaternions and scalling volume direcly
-
-        Args:
-            states: The current states.i
-            actions: The actions to take.
-
-        Returns the new states after taking the actions as a tensor of shape (*batch_shape, *state_shape).
+        action[0] one will be applied to state[0] and so on
+        returns the new batch of states
+        Arguements:
+            states: States, states you want to apply the action to
+            actions: Actions action you want to apply the states
+        Returns:
+            torch.Tensor
         """
-        raise NotImplementedError
-        new_states_tensor = states.tensor.scatter(-1, actions.tensor, 1, reduce="add")
-        assert new_states_tensor.shape == states.tensor.shape
-        return new_states_tensor
+        # verify that states are in the right shape
+        # apply the action on the state
+        # First create a tensor of the right shape
+        new_states = states.tensor.clone()
+
+        # Iterate through batch and apply actions using tensor operations
+        # TODO: this could get costly in traing, possably look for a way to use vmap
+        for idx, (state, action) in enumerate(zip(states.tensor, actions.tensor)):
+            action_key = int(action)
+            new_states[idx] = self.action_list[action_key](state)
+
+        return new_states  # pyright: ignore
+        return self.batch_step(states.tensor, actions.tensor)
 
     def is_action_valid(
         self, states: States, actions: Actions, backward: bool = False

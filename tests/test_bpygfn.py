@@ -6,7 +6,7 @@ import pytest
 import torch
 from gfn.states import States
 
-from bpygfn.base import SuperSimpleEnv
+from bpygfn.base import ActionList, SuperSimpleEnv
 
 
 @pytest.fixture
@@ -83,16 +83,22 @@ def dummy_actions_n_actions_10():
     return np.identity(10)
 
 
-import pudb
+@pytest.fixture
+def dummy_actions_list() -> ActionList:
+    def print_action(state: torch.Tensor) -> torch.Tensor:
+        print("hello")
+        return state
 
-pudb.set_trace()
+    return {
+        1: print_action,
+        2: print_action,
+        3: print_action,
+        4: print_action,
+    }
 
 
-def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
-    SEED = 1234
-
-    """K Hot Preprocessor for environments with enumerable states (finite number of states) with a grid structure.
-
+def test_SuperSimpleEnv_step(dummy_actions_list):
+    """
     Args:
         height (int): number of unique values per dimension.
         ndim (int): number of dimensions.
@@ -105,10 +111,17 @@ def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
     # - states are discrete
 
     env = SuperSimpleEnv(
-        device_str="cpu",
+        history_size=3, device_str="cpu", action_list=dummy_actions_list
     )
 
-    # Utilities.
+    random_states = env.reset(
+        batch_shape=10,
+    )
+
+    print(random_states.tensor)
+    env.preprocessor.preprocess(random_states)
+    test_actions = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2]
+
     def format_tensor(list_, discrete=True):
         """
         If discrete, returns a long tensor with a singleton batch dimension from list
@@ -119,16 +132,8 @@ def test_SuperSimpleEnv_step(dummy_actions_n_actions_10):
         else:
             return torch.tensor(list_, dtype=torch.float)
 
-    # random_states =
-    random_states = env.reset(
-        batch_shape=10,
-        random=True,
-        seed=SEED,  # pyright: ignore
-    )
-    env.preprocessor.preprocess(random_states)
-
-    print(random_states)
-
+    actions = env.actions_from_tensor(format_tensor(test_actions))
+    env.step(states=random_states, actions=actions)  # pyright: ignore
     assert True
     # preprocessed_grid = env.preprocessor.preprocess(random_states)
     """
