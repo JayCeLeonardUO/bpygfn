@@ -7,6 +7,7 @@ import torch
 from gfn.states import States
 
 from bpygfn.base import ActionList, SuperSimpleEnv
+from bpygfn.quat import get_quaternion_slice, scale_state_up
 
 
 @pytest.fixture
@@ -89,11 +90,24 @@ def dummy_actions_list() -> ActionList:
         print("hello")
         return state
 
+    def print_action_2(state: torch.Tensor) -> torch.Tensor:
+        print("hello 2")
+        return state
+
+    def print_action_3(state: torch.Tensor) -> torch.Tensor:
+        print("hello 3")
+        return state
+
+    def print_action_4(state: torch.Tensor) -> torch.Tensor:
+        print("hello 4")
+        return state
+
     return {
         1: print_action,
-        2: print_action,
-        3: print_action,
-        4: print_action,
+        2: print_action_2,
+        3: print_action_3,
+        4: scale_state_up,
+        5: get_quaternion_slice,
     }
 
 
@@ -120,7 +134,7 @@ def test_SuperSimpleEnv_step(dummy_actions_list):
 
     print(random_states.tensor)
     env.preprocessor.preprocess(random_states)
-    test_actions = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2]
+    test_actions = [1, 2, 5, 5, 1, 2, 3, 4, 1, 2]
 
     def format_tensor(list_, discrete=True):
         """
@@ -133,8 +147,8 @@ def test_SuperSimpleEnv_step(dummy_actions_list):
             return torch.tensor(list_, dtype=torch.float)
 
     actions = env.actions_from_tensor(format_tensor(test_actions))
-    env.step(states=random_states, actions=actions)  # pyright: ignore
-    assert True
+    steped_states = env.step(states=random_states, actions=actions)  # pyright: ignore
+    print(steped_states)
     # preprocessed_grid = env.preprocessor.preprocess(random_states)
     """
     # this is yanked from hypergrid.py

@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Callable, Dict, Iterator, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 import torch
 from gfn.actions import Actions
@@ -7,8 +7,10 @@ from gfn.env import DiscreteEnv
 from gfn.states import States
 from torch.types import Number
 
-QUATERNION_SIZE = 4
-VOLUME_SIZE = 1
+from bpygfn.quat import init_state
+
+QUATERNION_DIMS = 4
+VOLUME_DIMS = 1
 
 
 def my_rotate(target):
@@ -39,28 +41,12 @@ def turn_left(state: torch.Tensor) -> torch.Tensor:
     return new_state
 
 
+# TODO: make this dependency injection
 ACTION_LIST: ActionList = {
     0: move_forward,
     1: move_backward,
     2: turn_left,
 }
-
-
-def action_generator(
-    states: torch.Tensor, actions: torch.Tensor, action_list
-) -> Iterator[torch.Tensor]:
-    """
-    Generates new states by applying actions one at a time
-
-    Args:
-        states: torch.Tensor of shape (batch_size, state_dim)
-        actions: torch.Tensor of shape (batch_size,)
-
-    Yields:
-        torch.Tensor of shape (state_dim,) for each state
-    """
-    for state, action in zip(states, actions):
-        yield action_list[action.item()](state)
 
 
 class SuperSimpleEnv(DiscreteEnv):
@@ -84,17 +70,10 @@ class SuperSimpleEnv(DiscreteEnv):
         """
         action_shape = (1,)
         n_actions = len(action_list)
-        state_shape = ((QUATERNION_SIZE + VOLUME_SIZE + (n_actions * history_size)),)
-        s0 = torch.zeros(state_shape)
+        state_shape = ((QUATERNION_DIMS + VOLUME_DIMS + (n_actions * history_size)),)
+        s0 = init_state(state_shape)
         self.action_list = defaultdict(None, action_list)
 
-        # Pre-define the vectorized step function
-        def apply_single_step(
-            state: torch.Tensor, action: torch.Tensor
-        ) -> torch.Tensor:
-            return self.action_list[action.item()](state)
-
-        self.batch_step = torch.vmap(apply_single_step, in_dims=(0, 0))
         super().__init__(
             n_actions=len(self.action_list),
             s0=s0,
@@ -103,16 +82,14 @@ class SuperSimpleEnv(DiscreteEnv):
             action_shape=action_shape,
         )
 
-    def apply_batched_actions(
-        self, states: torch.Tensor, actions: torch.Tensor
-    ) -> torch.Tensor:
-        return torch.stack(list(action_generator(states, actions, self.action_list)))
-
     def step(self, states: States, actions: Actions) -> torch.Tensor:
         """Take a step in the environment.
 
         action[0] one will be applied to state[0] and so on
         returns the new batch of states
+
+        Note- it is step that will alter the action history of the state (for now)
+
         Arguements:
             states: States, states you want to apply the action to
             actions: Actions action you want to apply the states
