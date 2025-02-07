@@ -4,7 +4,7 @@ from typing import Callable, Dict, Optional, Union
 import torch
 from gfn.actions import Actions
 from gfn.env import DiscreteEnv
-from gfn.states import States
+from gfn.states import DiscreteStates, States
 from torch.types import Number
 
 from bpygfn.quat import init_state
@@ -66,11 +66,22 @@ class SuperSimpleEnv(DiscreteEnv):
             history_size: int, - len of the history of prev actions you want in the state
             action_list: ActionList, - dict of fn pointers, this internal defindes n_actions
             device_str: Optional[str] = None, - can be "cpu" or "cuda"
-
         """
+
         action_shape = (1,)
+        self.base_shape = QUATERNION_DIMS + VOLUME_DIMS
+
+        # welp... looks like from the hypergrid env that n_action should account for the exit action
+        # hence we add one to the len of the actions list...
+        # TODO: fix all the bugs this +1 is going to cause
         n_actions = len(action_list)
         state_shape = ((QUATERNION_DIMS + VOLUME_DIMS + (n_actions * history_size)),)
+
+        self.state_action_history_slices = [
+            slice(i, i + n_actions)
+            for i in range(self.base_shape, *state_shape, n_actions)
+        ]
+
         s0 = init_state(state_shape)
         self.action_list = defaultdict(None, action_list)
 
@@ -96,8 +107,7 @@ class SuperSimpleEnv(DiscreteEnv):
         Returns:
             torch.Tensor
         """
-        # verify that states are in the right shape
-        # apply the action on the state
+
         # First create a tensor of the right shape
         new_states = states.tensor.clone()
 
@@ -107,8 +117,26 @@ class SuperSimpleEnv(DiscreteEnv):
             action_key = int(action)
             new_states[idx] = self.action_list[action_key](state)
 
+            # Get the existing action history, excluding oldest action
+            last_states = new_states[
+                idx,
+                slice(
+                    self.state_action_history_slices[0].start,
+                    self.state_action_history_slices[1].stop,
+                ),
+            ]
+            import pudb
+
+            pudb.set_trace()
+            # Create one-hot encoding for the new action
+            action_onehot = torch.zeros(self.n_actions, device=new_states.device)
+
+            action_onehot[action_key] = 1
+            print(action_onehot)
+            # Update the action history - new action goes at start, drop oldest
+            new_states[idx, self.base_shape :] = torch.cat([action_onehot, last_states])
+        # why does this fn return a tensoe and not states????
         return new_states  # pyright: ignore
-        return self.batch_step(states.tensor, actions.tensor)
 
     def is_action_valid(
         self, states: States, actions: Actions, backward: bool = False
@@ -118,8 +146,29 @@ class SuperSimpleEnv(DiscreteEnv):
     def backward_step(self, states: States, actions: Actions) -> torch.Tensor:
         return super().backward_step(states, actions)
 
-    def update_masks(self, states: States) -> None:
-        return super().update_masks(states)
+    def update_masks(self, states: DiscreteStates) -> None:  # pyright: ignore
+        """
+        This is more for just validation that masks actually prevent actions from being taken
+
+        the state that this fn is preventing is "consecutive" actions
+        Mind you this is called on the entire batch shape... not just one given shape
+        """
+
+        import pudb
+
+        pudb.set_trace()
+        valid_actions_mask = torch.stack(
+            [
+                ~state[self.state_action_history_slices[0]].bool()
+                for state in states.tensor
+            ]
+        )
+        states.forward_masks = valid_actions_mask
+        # TODO: early termination logic
+
+        # Intionnally NOT using this functtion. ... helper fn is not helpfull or intuitive...
+        # this funtion expects invers logic for allowed states.... wtf???
+        # states.set_nonexit_action_masks(my_cond, allow_exit=True)
 
     """ 
     #from the Debuger I was not able to find any where this i called other then testing

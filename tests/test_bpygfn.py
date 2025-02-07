@@ -7,7 +7,7 @@ import torch
 from gfn.states import States
 
 from bpygfn.base import ActionList, SuperSimpleEnv
-from bpygfn.quat import get_quaternion_slice, scale_state_up
+from bpygfn.quat import scale_state_down, scale_state_up
 
 
 @pytest.fixture
@@ -87,7 +87,11 @@ def dummy_actions_n_actions_10():
 @pytest.fixture
 def dummy_actions_list() -> ActionList:
     def print_action(state: torch.Tensor) -> torch.Tensor:
-        print("hello")
+        print("hello 0")
+        return state
+
+    def print_action_1(state: torch.Tensor) -> torch.Tensor:
+        print("hello 1")
         return state
 
     def print_action_2(state: torch.Tensor) -> torch.Tensor:
@@ -103,15 +107,33 @@ def dummy_actions_list() -> ActionList:
         return state
 
     return {
-        1: print_action,
+        0: print_action,
+        1: print_action_1,
         2: print_action_2,
-        3: print_action_3,
+        3: scale_state_down,
         4: scale_state_up,
-        5: get_quaternion_slice,
     }
 
 
-def test_SuperSimpleEnv_step(dummy_actions_list):
+@pytest.fixture
+def dummy_env(dummy_actions_list):
+    return SuperSimpleEnv(
+        history_size=3, device_str="cpu", action_list=dummy_actions_list
+    )
+
+
+def format_tensor(list_, discrete=True):
+    """
+    If discrete, returns a long tensor with a singleton batch dimension from list
+    ``list_``. Otherwise, casts list to a float tensor without unsqueezing
+    """
+    if discrete:
+        return torch.tensor(list_, dtype=torch.long).unsqueeze(-1)
+    else:
+        return torch.tensor(list_, dtype=torch.float)
+
+
+def test_SuperSimpleEnv_step(dummy_actions_list, dummy_env):
     """
     Args:
         height (int): number of unique values per dimension.
@@ -131,24 +153,23 @@ def test_SuperSimpleEnv_step(dummy_actions_list):
     random_states = env.reset(
         batch_shape=10,
     )
-
+    print(random_states.forward_masks)  # pyright: ignore
     print(random_states.tensor)
     env.preprocessor.preprocess(random_states)
-    test_actions = [1, 2, 5, 5, 1, 2, 3, 4, 1, 2]
-
-    def format_tensor(list_, discrete=True):
-        """
-        If discrete, returns a long tensor with a singleton batch dimension from list
-        ``list_``. Otherwise, casts list to a float tensor without unsqueezing
-        """
-        if discrete:
-            return torch.tensor(list_, dtype=torch.long).unsqueeze(-1)
-        else:
-            return torch.tensor(list_, dtype=torch.float)
+    test_actions = [1, 2, 0, 0, 1, 2, 3, 4, 1, 2]
 
     actions = env.actions_from_tensor(format_tensor(test_actions))
-    steped_states = env.step(states=random_states, actions=actions)  # pyright: ignore
-    print(steped_states)
+    # how do i check that the states what where called here are right?
+    import pudb
+
+    pudb.set_trace()
+
+    steped_states = env._step(states=random_states, actions=actions)  # pyright: ignore
+    print(steped_states.tensor)
+    print(steped_states.forward_masks)
+    print(test_actions)
+    # cursed, code. I hate it so much
+    # this is an in place fn
     # preprocessed_grid = env.preprocessor.preprocess(random_states)
     """
     # this is yanked from hypergrid.py
@@ -164,16 +185,59 @@ def test_SuperSimpleEnv_step(dummy_actions_list):
     """
 
 
-#    for actions_list in passing_actions_lists:
-#        # WHAT PATTERN IS THIS SHIT????
-#        actions = env.actions_from_tensor(format_tensor(actions_list))
-#
-#        # this process is such a night mare
-#        # 1. you have to pass in a tensor of actions, to get actions?
-#        # 2. then you have to pass in states and actions BACK INTO ENV?!?!?!?
-#        steps = env.step(states, actions)
-#        print(steps)
-#
-#
-#
-#        # verify that step applied the logic that I want
+def test_masked_states(dummy_actions_list, dummy_env):
+    """
+    this state is to test weather or not the masked states fn will preven repetes 'consecutive' actions
+
+    -   note that this will not apply to the exit state...
+        in the case of the exit state... padding the trajectory is the only valid action
+    """
+    return 0
+    state = [
+        0.0000,  # quaternion
+        0.0000,
+        0.0000,
+        0.0000,
+        1.0000,  # volume
+        1.0000,  # start action 1
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,  # start action 2
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+    ]
+
+    invalid_state = [
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        1.0000,
+        1.0000,  # action 1
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        1.0000,  # action 2 - repeat of action one... bad
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+        0.0000,
+    ]
+    dummy_env.update_masks(state)
+
+    pass
