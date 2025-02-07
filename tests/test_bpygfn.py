@@ -9,6 +9,8 @@ from gfn.states import States
 from bpygfn.base import ActionList, SuperSimpleEnv
 from bpygfn.quat import scale_state_down, scale_state_up
 
+# remind pyright States
+
 
 @pytest.fixture
 def dummy_actions():
@@ -166,23 +168,8 @@ def test_SuperSimpleEnv_step(dummy_actions_list, dummy_env):
 
     steped_states = env._step(states=random_states, actions=actions)  # pyright: ignore
     print(steped_states.tensor)
-    print(steped_states.forward_masks)
+    print(steped_states.forward_masks)  # pyright: ignore
     print(test_actions)
-    # cursed, code. I hate it so much
-    # this is an in place fn
-    # preprocessed_grid = env.preprocessor.preprocess(random_states)
-    """
-    # this is yanked from hypergrid.py
-    actions = env.actions_from_tensor(format_tensor([2, 1, 0, 1]))
-
-    print(f"Reset states: {states.s0}")
-    print(f"state Tensor: {states.tensor}")
-    print(f"Actions: {actions.tensor}")
-
-    steps = env.step(states=states, actions=actions)
-
-    print(f"Steps: {steps}")
-    """
 
 
 def test_masked_states(dummy_actions_list, dummy_env):
@@ -193,51 +180,3 @@ def test_masked_states(dummy_actions_list, dummy_env):
         in the case of the exit state... padding the trajectory is the only valid action
     """
     return 0
-    state = [
-        0.0000,  # quaternion
-        0.0000,
-        0.0000,
-        0.0000,
-        1.0000,  # volume
-        1.0000,  # start action 1
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,  # start action 2
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-    ]
-
-    invalid_state = [
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        1.0000,
-        1.0000,  # action 1
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        1.0000,  # action 2 - repeat of action one... bad
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-        0.0000,
-    ]
-    dummy_env.update_masks(state)
-
-    pass

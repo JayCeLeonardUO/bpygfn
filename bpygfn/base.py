@@ -9,7 +9,10 @@ from torch.types import Number
 
 from bpygfn.quat import init_state
 
+# a quaternion will aways be 4.... cuz its a quaternion
 QUATERNION_DIMS = 4
+# This is the volume for a mesh... for now it is a single integer in the state
+# TODO: I don't thing this global is apropreate
 VOLUME_DIMS = 1
 
 
@@ -73,7 +76,6 @@ class SuperSimpleEnv(DiscreteEnv):
 
         # welp... looks like from the hypergrid env that n_action should account for the exit action
         # hence we add one to the len of the actions list...
-        # TODO: fix all the bugs this +1 is going to cause
         n_actions = len(action_list)
         state_shape = ((QUATERNION_DIMS + VOLUME_DIMS + (n_actions * history_size)),)
 
@@ -81,7 +83,7 @@ class SuperSimpleEnv(DiscreteEnv):
             slice(i, i + n_actions)
             for i in range(self.base_shape, *state_shape, n_actions)
         ]
-
+        self.quat_slice = slice(0, QUATERNION_DIMS)
         s0 = init_state(state_shape)
         self.action_list = defaultdict(None, action_list)
 
@@ -141,9 +143,19 @@ class SuperSimpleEnv(DiscreteEnv):
     def is_action_valid(
         self, states: States, actions: Actions, backward: bool = False
     ) -> bool:
+        """
+        as per the domentation... is_action_valid must be difined by the user...
+        But im pretty sure this fn is taken care of by the DiscreteEnv ABC
+        """
+        # TODO: investigate if I have to impliment this or if using the partent is ok
         return super().is_action_valid(states, actions, backward)
 
     def backward_step(self, states: States, actions: Actions) -> torch.Tensor:
+        """
+        This is a trajectory of a Backwards step.
+
+        In This env provents repeated actions, so That means that it will match the forward masks logic
+        """
         return super().backward_step(states, actions)
 
     def update_masks(self, states: DiscreteStates) -> None:  # pyright: ignore
@@ -165,15 +177,29 @@ class SuperSimpleEnv(DiscreteEnv):
         )
         states.forward_masks = valid_actions_mask
         # TODO: early termination logic
-
         # Intionnally NOT using this functtion. ... helper fn is not helpfull or intuitive...
         # this funtion expects invers logic for allowed states.... wtf???
         # states.set_nonexit_action_masks(my_cond, allow_exit=True)
 
-    """ 
-    #from the Debuger I was not able to find any where this i called other then testing
-    def make_random_states_tensor(self, batch_shape: Tuple[int, ...]) -> torch.Tensor:
-        return torch.randint(
-            0, self.height, batch_shape + self.s0.shape, device=self.device
-        )
-    """
+    def reward(self, final_states: States) -> torch.Tensor:
+        """
+        the ACB if the env class wants the reward to call in state
+
+        Possable Implimentation Err?
+            Discrete enve should have made it so the reward takes in descrete state
+            you have to overide the virtual fn for that to happen....
+            Discrete evironment does not over ride the type hinting
+
+            But hypergrid overrides this with DiscreteState... for litrally no reasion
+
+            its only type hinting but now I wonder why there is even the distinction
+        Arguments:
+            final_states: these are the final states
+                you note that this will be the result of the trajectory...
+        Returns:
+            This rewards orentations (quaternions) that are up right and 2x > starting volume
+            OR
+            rewards orentations that are "up-side-down" and <1.5x the scale of the original
+        """
+
+        return final_states.tensor
