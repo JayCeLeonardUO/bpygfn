@@ -1,15 +1,64 @@
+# remind pyright States
+import warnings
+from dataclasses import dataclass
 from typing import Iterable, Iterator
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 import torch
+from gfn.gflownet import TBGFlowNet
+from gfn.modules import DiscretePolicyEstimator
+from gfn.samplers import Sampler
 from gfn.states import States
+from gfn.utils.modules import MLP
+from gfn.utils.training import validate
+from tqdm import tqdm
 
 from bpygfn.base import ActionList, SuperSimpleEnv
 from bpygfn.quat import scale_state_down, scale_state_up
 
-# remind pyright States
+warnings.filterwarnings(
+    "ignore", message="urwid.listbox is moved to urwid.widget.listbox"
+)
+
+
+@dataclass
+class TrainingArgs:
+    no_cuda: bool = False
+    ndim: int = 4
+    height: int = 16
+    seed: int = 0
+    lr: float = 1e-3
+    lr_logz: float = 1e-1
+    n_iterations: int = 1000
+    validation_interval: int = 100
+    validation_samples: int = 100000
+    batch_size: int = 16
+    epsilon: float = 0.1
+
+
+@pytest.fixture
+def training_args(request) -> TrainingArgs:
+    """
+    Fixture that provides training arguments with default values.
+    Can be overridden using @pytest.mark.parametrize or by passing custom values.
+
+    Example usage:
+        def test_training(training_args):
+            assert training_args.batch_size == 16
+
+        @pytest.mark.parametrize('training_args',
+                               [{'batch_size': 32, 'lr': 1e-4}],
+                               indirect=True)
+        def test_custom_training(training_args):
+            assert training_args.batch_size == 32
+            assert training_args.lr == 1e-4
+    """
+    # Get custom parameters if provided through parametrize
+    if hasattr(request, "param"):
+        return TrainingArgs(**{**vars(TrainingArgs()), **request.param})
+    return TrainingArgs()
 
 
 @pytest.fixture
@@ -118,6 +167,37 @@ def dummy_actions_list() -> ActionList:
 
 
 @pytest.fixture
+def Blender_actions() -> ActionList:
+    def print_action(state: torch.Tensor) -> torch.Tensor:
+        print("hello 0")
+        return state
+
+    def print_action_1(state: torch.Tensor) -> torch.Tensor:
+        print("hello 1")
+        return state
+
+    def print_action_2(state: torch.Tensor) -> torch.Tensor:
+        print("hello 2")
+        return state
+
+    def print_action_3(state: torch.Tensor) -> torch.Tensor:
+        print("hello 3")
+        return state
+
+    def print_action_4(state: torch.Tensor) -> torch.Tensor:
+        print("hello 4")
+        return state
+
+    return {
+        0: print_action,
+        1: print_action_1,
+        2: print_action_2,
+        3: scale_state_down,
+        4: scale_state_up,
+    }
+
+
+@pytest.fixture
 def dummy_env(dummy_actions_list):
     return SuperSimpleEnv(
         history_size=3, device_str="cpu", action_list=dummy_actions_list
@@ -135,7 +215,12 @@ def format_tensor(list_, discrete=True):
         return torch.tensor(list_, dtype=torch.float)
 
 
-def test_SuperSimpleEnv_step(dummy_actions_list, dummy_env):
+@pytest.fixture
+def args_blah():
+    return
+
+
+def test_SuperSimpleEnv_step(dummy_actions_list, dummy_env):  # {{{
     """
     Args:
         height (int): number of unique values per dimension.
@@ -155,28 +240,94 @@ def test_SuperSimpleEnv_step(dummy_actions_list, dummy_env):
     random_states = env.reset(
         batch_shape=10,
     )
-    print(random_states.forward_masks)  # pyright: ignore
-    print(random_states.tensor)
     env.preprocessor.preprocess(random_states)
     test_actions = [1, 2, 0, 0, 1, 2, 3, 4, 1, 2]
 
     actions = env.actions_from_tensor(format_tensor(test_actions))
     # how do i check that the states what where called here are right?
-    import pudb
-
-    pudb.set_trace()
-
     steped_states = env._step(states=random_states, actions=actions)  # pyright: ignore
-    print(steped_states.tensor)
-    print(steped_states.forward_masks)  # pyright: ignore
-    print(test_actions)
+    # valid_masks = torch.tensor(
+    #     [
+    #         [True, False, True, True, True],
+    #         [True, True, False, True, True],
+    #         [False, True, True, True, True],
+    #         [False, True, True, True, True],
+    #         [True, False, True, True, True],
+    #         [True, True, False, True, True],
+    #         [True, True, True, False, True],
+    #         [False, False, False, False, False],
+    #         [True, False, True, True, True],
+    #         [True, True, False, True, True],
+    #     ]
+    # )
+    print(env.reward(steped_states))  # }}}
+
+    # assert valid_masks == steped_states.forward_masks  # pyright: ignore
 
 
-def test_masked_states(dummy_actions_list, dummy_env):
-    """
-    this state is to test weather or not the masked states fn will preven repetes 'consecutive' actions
+def test_training(training_args, dummy_env):  # {{{
+    args = training_args
+    device_str = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
 
-    -   note that this will not apply to the exit state...
-        in the case of the exit state... padding the trajectory is the only valid action
-    """
-    return 0
+    # Setup the Environment.
+    env = dummy_env
+    # Build the GFlowNet.
+    module_PF = MLP(
+        input_dim=env.preprocessor.output_dim,
+        output_dim=env.n_actions,
+    )
+    module_PB = MLP(
+        input_dim=env.preprocessor.output_dim,
+        output_dim=env.n_actions - 1,
+        trunk=module_PF.trunk,
+    )
+    pf_estimator = DiscretePolicyEstimator(
+        module_PF, env.n_actions, is_backward=False, preprocessor=env.preprocessor
+    )
+    pb_estimator = DiscretePolicyEstimator(
+        module_PB, env.n_actions, is_backward=True, preprocessor=env.preprocessor
+    )
+    gflownet = TBGFlowNet(pf=pf_estimator, pb=pb_estimator, logZ=0.0)
+
+    # Feed pf to the sampler.
+    sampler = Sampler(estimator=pf_estimator)
+
+    # Move the gflownet to the GPU.
+    gflownet = gflownet.to(device_str)
+
+    # Policy parameters have their own LR. Log Z gets dedicated learning rate
+    # (typically higher).
+    optimizer = torch.optim.Adam(gflownet.pf_pb_parameters(), lr=args.lr)
+    optimizer.add_param_group(
+        {"params": gflownet.logz_parameters(), "lr": args.lr_logz}
+    )
+
+    validation_info = {"l1_dist": float("inf")}
+    visited_terminating_states = env.states_from_batch_shape((0,))
+    for it in (pbar := tqdm(range(args.n_iterations), dynamic_ncols=True)):  # pyright: ignore
+        trajectories = sampler.sample_trajectories(
+            env,
+            n=args.batch_size,
+            save_logprobs=True,
+            save_estimator_outputs=False,
+            epsilon=args.epsilon,
+        )
+        visited_terminating_states.extend(trajectories.last_states)
+
+        optimizer.zero_grad()
+        loss = gflownet.loss(env, trajectories)
+        loss.backward()
+        optimizer.step()
+        if (it + 1) % args.validation_interval == 0:
+            validation_info = validate(
+                env,
+                gflownet,
+                args.validation_samples,
+                visited_terminating_states,
+            )
+            print(f"Iter {it + 1}: L1 distance {validation_info['l1_dist']:.8f}")
+        pbar.set_postfix({"loss": loss.item()})  # }}}
+
+
+def test_hypergridbmesh():
+    print(" What is going on")

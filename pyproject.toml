@@ -43,6 +43,11 @@ exclude = [
 ]
 
 [tool.pyright]
+# Add these settings:
+reportAttributeAccessIssue = false
+reportDictionaryAccessIssue = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
 exclude = [
  "torchgfn/"
 ]

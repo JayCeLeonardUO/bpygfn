@@ -12,7 +12,6 @@ from bpygfn.quat import init_state
 # a quaternion will aways be 4.... cuz its a quaternion
 QUATERNION_DIMS = 4
 # This is the volume for a mesh... for now it is a single integer in the state
-# TODO: I don't thing this global is apropreate
 VOLUME_DIMS = 1
 
 
@@ -78,7 +77,7 @@ class SuperSimpleEnv(DiscreteEnv):
         # hence we add one to the len of the actions list...
         n_actions = len(action_list)
         state_shape = ((QUATERNION_DIMS + VOLUME_DIMS + (n_actions * history_size)),)
-
+        self.volume_slice = VOLUME_DIMS
         self.state_action_history_slices = [
             slice(i, i + n_actions)
             for i in range(self.base_shape, *state_shape, n_actions)
@@ -165,10 +164,6 @@ class SuperSimpleEnv(DiscreteEnv):
         the state that this fn is preventing is "consecutive" actions
         Mind you this is called on the entire batch shape... not just one given shape
         """
-
-        import pudb
-
-        pudb.set_trace()
         valid_actions_mask = torch.stack(
             [
                 ~state[self.state_action_history_slices[0]].bool()
@@ -199,7 +194,17 @@ class SuperSimpleEnv(DiscreteEnv):
         Returns:
             This rewards orentations (quaternions) that are up right and 2x > starting volume
             OR
-            rewards orentations that are "up-side-down" and <1.5x the scale of the original
+            rewards orentations that are "up-side-down" and < 1.5x the scale of the original
         """
+        # for each state in the batch of final states
+        rewards = torch.zeros(len(final_states), device=final_states.device)
+        for i, state in enumerate(final_states.tensor):
+            initial_vol = self.s0[self.volume_slice]
+            current_vol = state[self.volume_slice]
 
-        return final_states.tensor
+            if initial_vol * 2 >= current_vol:
+                rewards[i] = 2.0
+            elif initial_vol * 1.5 >= current_vol:
+                rewards[i] = 1.0
+            # else reward stays 0
+        return rewards

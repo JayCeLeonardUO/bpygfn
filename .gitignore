@@ -24,3 +24,5 @@ bpygfn/__pycache__/base.cpython-311.pyc
 *.iml
 *.pyc
 *.pyc
+tests/color_ramp_test.blend
+tests/color_ramp_test.blend1
