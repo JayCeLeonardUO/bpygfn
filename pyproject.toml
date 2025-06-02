@@ -25,6 +25,8 @@ ruff = "^0.9.2"
 torchgfn = {path = "torchgfn/", develop = true, extras = ["all"]}
 pyright = "^1.1.393"
 numpy-quaternion = "^2024.0.7"
+scikit-image = "^0.25.2"
+plotly = "^6.1.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -38,12 +40,30 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
+line-length = 88  # Add this - controls formatting line length
 exclude = [
- "torchgfn/"
+    "torchgfn/"
 ]
+
+[tool.ruff.lint]  # Move lint settings here
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings  
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade (but exclude type-related ones)
+]
+ignore = [
+    "F401", "F811", "F821",  # Let Pyright handle these
+    "UP006", "UP007",        # Type annotation upgrades
+]
+
+[tool.ruff.format]  # Add this section for formatting
+# This section can be empty - default settings are usually fine
 
 [tool.pyright]
 # Add these settings:
+typeCheckingMode = "off"
 reportAttributeAccessIssue = false
 reportDictionaryAccessIssue = false
 reportUnknownMemberType = false

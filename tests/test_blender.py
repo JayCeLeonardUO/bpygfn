@@ -1,8 +1,9 @@
-import os
-import pytest
-import bpy
-from pathlib import Path
 import datetime
+import os
+from pathlib import Path
+
+import bpy
+import pytest
 
 
 def test_example_scene():
@@ -56,6 +57,7 @@ def save_dir():
     return {"current": base_dir, "history": history_dir}
 
 
+# @aerial Color ramp configuration for Blender
 def color_ramp_blender_config():
     return {
         "nodes": [
@@ -242,7 +244,8 @@ def test_color_ramp(save_dir, color_ramp_blender_config):
     except Exception as e:
         print(f"  - Note: Could not assign node group to modifier: {e}")
         print(
-            "  - This is expected in some Blender versions and won't affect the test results"
+            "  - This is expected in some Blender versions and won't affect the test "
+            "results"
         )
 
     # Save the Blender file
