@@ -1825,19 +1825,42 @@ def state_to_tensor(env, state):
 
 
 class PolicyTrajectorySampler:
-    """Sample trajectories using learned policy - mirroring HyperGrid implementation"""
+    """Sample trajectories using learned policy with proper epsilon-greedy"""
 
-    def __init__(self, env, model: TBModel = None, epsilon: float = 0.2):
+    def __init__(self, env, model=None, epsilon: float = 0.2):
         self.env = env
         self.model = model
         self.epsilon = epsilon
 
-    def sample_trajectory(self, max_steps: int = 20):
-        """Sample trajectory using policy with epsilon-greedy exploration"""
+    def encode_action(
+        self, action: Tuple, max_colors: int = 3, num_color_choices: int = 8
+    ) -> int:
+        """Convert structured action to integer index for model"""
+        if action[0] == "scale":
+            return action[1]  # Scale actions: 0, 1, 2, 3, 4
+        elif action[0] == "color":
+            pos, color_id = action[1], action[2]
+            # Color actions start after scale actions
+            return 5 + pos * num_color_choices + color_id
+        else:
+            return 0
+
+    def decode_action_index(self, action_idx: int, valid_actions: List[Tuple]) -> Tuple:
+        """Convert integer index back to structured action"""
+        # Find the valid action that corresponds to this index
+        for valid_action in valid_actions:
+            if self.encode_action(valid_action) == action_idx:
+                return valid_action
+
+        # Fallback: return first valid action if no match
+        return valid_actions[0] if valid_actions else None
+
+    def sample_trajectory(self, max_steps: int = 20) -> List[Tuple]:
+        """Sample trajectory using epsilon-greedy policy"""
         trajectory = []
         state = self.env.get_initial_state()
 
-        for _ in range(max_steps):
+        for step in range(max_steps):
             if self.env.is_terminal(state):
                 break
 
@@ -1845,41 +1868,191 @@ class PolicyTrajectorySampler:
             if not valid_actions:
                 break
 
+            # EPSILON-GREEDY DECISION
             if self.model is None or random.random() < self.epsilon:
-                # Random exploration
+                # EXPLORATION: Random action
                 action = random.choice(valid_actions)
+
             else:
-                # Use learned policy
-                state_tensor = state_to_tensor(self.env, state)
+                # EXPLOITATION: Use learned policy
+                state_tensor = self.state_to_tensor(state)
                 P_F_logits, _ = self.model(state_tensor)
 
-                # Mask invalid actions
-                action_mask = torch.tensor(
-                    [
-                        1.0 if a in valid_actions else 0.0
-                        for a in range(P_F_logits.shape[0])
-                    ]
-                )
-                masked_logits = P_F_logits.where(
-                    action_mask.bool(), torch.tensor(-100.0)
-                )
+                # Create action mask for valid actions only
+                action_mask = torch.full_like(P_F_logits, float("-inf"))
 
-                # Sample from policy
+                for valid_action in valid_actions:
+                    action_idx = self.encode_action(valid_action)
+                    if action_idx < len(action_mask):
+                        action_mask[action_idx] = (
+                            0.0  # Valid actions get 0, invalid get -inf
+                        )
+
+                # Apply mask and get probabilities
+                masked_logits = (
+                    P_F_logits + action_mask
+                )  # -inf masks out invalid actions
                 probs = F.softmax(masked_logits, dim=0)
-                action = torch.multinomial(probs, 1).item()
 
-            trajectory.append(state.copy())
+                # Sample from masked distribution
+                action_idx = torch.multinomial(probs, 1).item()
+
+                # Convert back to structured action
+                action = self.decode_action_index(action_idx, valid_actions)
+
+                # Safety check
+                if action not in valid_actions:
+                    print(f"⚠️ Policy selected invalid action {action}, using random")
+                    action = random.choice(valid_actions)
+
+            # Store (state, action) pair and advance
+            trajectory.append((state.copy(), action))
             state = self.env.apply_action(state, action)
 
         return trajectory
 
-    def sample_batch(self, batch_size: int, max_steps: int = 20):
+    def state_to_tensor(self, state):
+        """Convert state to tensor (you'll need to implement this based on your state format)"""
+        # This depends on your specific state representation
+        # For ColorRampState, you might do something like:
+
+        encoding = [0.0] * 20  # Fixed size encoding
+
+        # Encode scale
+        if hasattr(state, "scale") and state.scale is not None:
+            encoding[0] = state.scale / 3.0  # Normalize
+
+        # Encode colors
+        if hasattr(state, "colors"):
+            for i, (pos, color_id) in enumerate(state.colors.items()):
+                if i < 3:  # Max 3 colors
+                    encoding[1 + i * 2] = pos / 3.0
+                    encoding[1 + i * 2 + 1] = color_id / 8.0
+
+        # Encode step count
+        if hasattr(state, "step_count"):
+            encoding[-1] = min(state.step_count / 10.0, 1.0)
+
+        return torch.tensor(encoding, dtype=torch.float32)
+
+    def sample_batch(self, batch_size: int, max_steps: int = 20) -> List[List[Tuple]]:
         """Sample batch of trajectories"""
         trajectories = []
-        for _ in range(batch_size):
+        for i in range(batch_size):
             traj = self.sample_trajectory(max_steps)
             trajectories.append(traj)
         return trajectories
+
+    def get_action_statistics(self, num_trajectories: int = 100) -> dict:
+        """Analyze action selection statistics"""
+        exploration_count = 0
+        exploitation_count = 0
+
+        for _ in range(num_trajectories):
+            state = self.env.get_initial_state()
+
+            for step in range(10):  # Sample a few steps
+                if self.env.is_terminal(state):
+                    break
+
+                valid_actions = self.env.get_valid_actions(state)
+                if not valid_actions:
+                    break
+
+                # Check which branch would be taken
+                if self.model is None or random.random() < self.epsilon:
+                    exploration_count += 1
+                else:
+                    exploitation_count += 1
+
+                # Actually take action to advance state
+                action = random.choice(valid_actions)
+                state = self.env.apply_action(state, action)
+
+        total = exploration_count + exploitation_count
+        return {
+            "exploration_count": exploration_count,
+            "exploitation_count": exploitation_count,
+            "exploration_rate": exploration_count / total if total > 0 else 0,
+            "exploitation_rate": exploitation_count / total if total > 0 else 0,
+            "epsilon": self.epsilon,
+        }
+
+
+# Example usage and explanation
+def demonstrate_epsilon_greedy():
+    """Demonstrate how epsilon-greedy works"""
+
+    print("🎯 EPSILON-GREEDY EXPLANATION")
+    print("=" * 40)
+
+    epsilons = [0.0, 0.1, 0.5, 0.9, 1.0]
+
+    for eps in epsilons:
+        print(f"\nEpsilon = {eps}")
+        if eps == 0.0:
+            print("  → 100% EXPLOITATION (always use policy)")
+        elif eps == 1.0:
+            print("  → 100% EXPLORATION (always random)")
+        else:
+            print(
+                f"  → {eps * 100:.0f}% exploration, {(1 - eps) * 100:.0f}% exploitation"
+            )
+
+        # Simulate 100 decisions
+        exploration_decisions = sum(1 for _ in range(100) if random.random() < eps)
+        print(
+            f"  → In 100 decisions: ~{exploration_decisions} random, ~{100 - exploration_decisions} policy"
+        )
+
+    print(f"\n💡 KEY INSIGHTS:")
+    print(f"   • High ε (e.g., 0.8): More exploration, learns about new actions")
+    print(f"   • Low ε (e.g., 0.1): More exploitation, uses learned policy")
+    print(f"   • Common schedule: Start high ε, decay to low ε over training")
+    print(f"   • Balances exploration vs exploitation dilemma")
+
+
+def compare_sampling_strategies():
+    """Compare different sampling strategies"""
+
+    print(f"\n🔄 SAMPLING STRATEGY COMPARISON")
+    print("=" * 40)
+
+    strategies = [
+        ("Pure Random", 1.0),
+        ("High Exploration", 0.7),
+        ("Balanced", 0.3),
+        ("Low Exploration", 0.1),
+        ("Pure Exploitation", 0.0),
+    ]
+
+    for name, epsilon in strategies:
+        print(f"\n{name} (ε={epsilon}):")
+
+        if epsilon == 1.0:
+            print("  • Always takes random actions")
+            print("  • Good for: Initial exploration, discovering all possible actions")
+            print("  • Bad for: Using learned knowledge, convergence")
+
+        elif epsilon > 0.5:
+            print("  • Mostly random with some policy usage")
+            print("  • Good for: Early training, exploring new state regions")
+            print("  • Bad for: Exploiting good policies once found")
+
+        elif epsilon > 0.0:
+            print("  • Mostly policy with some randomness")
+            print("  • Good for: Balancing learning and performance")
+            print("  • Bad for: Pure performance (still makes mistakes)")
+
+        else:
+            print("  • Always follows learned policy")
+            print("  • Good for: Pure performance, evaluation")
+            print("  • Bad for: Discovering new strategies, avoiding local optima")
+
+
+if __name__ == "__main__":
+    demonstrate_epsilon_greedy()
+    compare_sampling_strategies()
 
 
 def trajectory_balance_loss(model: TBModel, trajectories, env):
