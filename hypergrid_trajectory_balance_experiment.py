@@ -1,7 +1,7 @@
 import math
 import random
 from collections import Counter, defaultdict
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union  # noqa: UP035
 
 import matplotlib.pyplot as plt
 import mlflow
@@ -10,7 +10,7 @@ import numpy as np
 import seaborn as sns
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 import torch.optim as optim
 from tqdm import tqdm
 
@@ -206,35 +206,80 @@ class TBModel(nn.Module):
         return P_F_logits, P_B_logits
 
 
-# ====================================================
-# Trajectory Balance Loss Function
-# ====================================================
+class PolicyTrajectorySampler:
+    """Sample trajectories using learned policy with encoded states"""
+
+    def __init__(self, env: HyperGrid, model: TBModel = None, epsilon: float = 0.2):
+        self.env = env
+        self.model = model
+        self.epsilon = epsilon
+
+    def sample_trajectory(self, max_steps: int = 20) -> List[Tuple[float, ...]]:
+        """Sample trajectory using policy with epsilon-greedy exploration"""
+        trajectory = [self.env.start_state]
+        state = self.env.start_state
+
+        for _ in range(max_steps):
+            if self.env.is_terminal(state):
+                break
+
+            valid_actions = self.env.get_valid_actions(state)
+            if not valid_actions:
+                break
+
+            if self.model is None or random.random() < self.epsilon:
+                # Random exploration
+                action = random.choice(valid_actions)
+            else:
+                # Use learned policy
+                state_tensor = torch.tensor(list(state), dtype=torch.float)
+                P_F_logits, _ = self.model(state_tensor)
+
+                # Mask invalid actions
+                action_mask = torch.tensor(self.env.get_valid_action_mask(state))
+                masked_logits = P_F_logits.where(
+                    action_mask.bool(), torch.tensor(-100.0)
+                )
+
+                # Sample from policy
+                probs = F.softmax(masked_logits, dim=0)
+                action_idx = torch.multinomial(probs, 1).item()
+                action = self.env.index_to_action(action_idx)
+
+            next_state = self.env.take_action(state, action)
+            trajectory.append(next_state)
+            state = next_state
+
+        return trajectory
+
+    def sample_batch(
+        self, batch_size: int, max_steps: int = 20
+    ) -> List[List[Tuple[float, ...]]]:
+        """Sample batch of trajectories"""
+        trajectories = []
+        for _ in range(batch_size):
+            traj = self.sample_trajectory(max_steps)
+            trajectories.append(traj)
+        return trajectories
+
+
 def trajectory_balance_loss(
     model: TBModel, trajectories: List[List[Tuple[float, ...]]], env: HyperGrid
 ) -> torch.Tensor:
     """
-    Optimized Trajectory Balance Loss
+    Corrected Trajectory Balance Loss that processes ALL trajectories
     """
 
-    # Early check: Filter for rewarded trajectories upfront
-    rewarded_trajectories = []
-    for traj in trajectories:
-        if len(traj) >= 2:  # Valid length
-            final_state = traj[-1]
-            reward = env.get_reward(final_state)
-            if reward > 0:  # Has reward
-                rewarded_trajectories.append((traj, reward))
-
-    # ====================================================
-    # Early exit if no valid trajectories
-    # ====================================================
-    if len(rewarded_trajectories) == 0:
+    if len(trajectories) == 0:
         return torch.tensor(0.0, requires_grad=True)
 
-    # Process only rewarded trajectories
+    # Process ALL trajectories, not just rewarded ones
     total_loss = torch.tensor(0.0, requires_grad=True)
 
-    for traj, reward in rewarded_trajectories:
+    for traj in trajectories:
+        if len(traj) < 2:  # Skip invalid trajectories
+            continue
+
         # ====================================================
         # FORWARD path: Z_θ * ∏P_F(s_t|s_{t-1})
         # ====================================================
@@ -270,10 +315,14 @@ def trajectory_balance_loss(
         # ====================================================
         # BACKWARD path: R(x) * ∏P_B(s_{t-1}|s_t)
         # ====================================================
+        reward = env.get_reward(traj[-1])
 
-        log_backward = torch.log(
-            torch.tensor(reward, dtype=torch.float, requires_grad=True)
-        )
+        # Handle zero rewards by using a small epsilon instead of log(0)
+        # This gives a strong negative signal for unrewarded trajectories
+        if reward <= 0:
+            reward = 1e-8  # Small epsilon to avoid log(0)
+
+        log_backward = torch.log(torch.tensor(reward, dtype=torch.float))
 
         for step in range(len(traj) - 1, 0, -1):
             current_state = traj[step]
@@ -318,15 +367,26 @@ def trajectory_balance_loss(
         # Apply trajectory balance equation
         # ====================================================
 
+        # The equation is NOT symmetric:
+        # Forward Flow:  log(Z) + Σlog(P_F(actions))
+        # Backward Flow: log(R) + Σlog(P_B(actions))
+        #                ↑        ↑
+        #                |        |
+        #         LEARNABLE   FIXED BY
+        #         PARAMETER   ENVIRONMENT
+        # This asymmetry is what creates the bias toward high-reward trajectories!
+
         trajectory_loss = (log_forward - log_backward) ** 2
         total_loss = total_loss + trajectory_loss
 
-    return total_loss / len(rewarded_trajectories)
+    return total_loss / len(trajectories)
 
 
 # ====================================================
 # Visualization Functions
 # ====================================================
+
+
 def visualize_trajectory_grid(  # {{{
     trajectories: List[List[Tuple]],
     env,
@@ -717,63 +777,6 @@ def visualize_policy_heatmaps(model, env, save_path: str = None):
 # }}}
 
 
-class PolicyTrajectorySampler:
-    """Sample trajectories using learned policy with encoded states"""
-
-    def __init__(self, env: HyperGrid, model: TBModel = None, epsilon: float = 0.2):
-        self.env = env
-        self.model = model
-        self.epsilon = epsilon
-
-    def sample_trajectory(self, max_steps: int = 20) -> List[Tuple[float, ...]]:
-        """Sample trajectory using policy with epsilon-greedy exploration"""
-        trajectory = [self.env.start_state]
-        state = self.env.start_state
-
-        for _ in range(max_steps):
-            if self.env.is_terminal(state):
-                break
-
-            valid_actions = self.env.get_valid_actions(state)
-            if not valid_actions:
-                break
-
-            if self.model is None or random.random() < self.epsilon:
-                # Random exploration
-                action = random.choice(valid_actions)
-            else:
-                # Use learned policy
-                state_tensor = torch.tensor(list(state), dtype=torch.float)
-                P_F_logits, _ = self.model(state_tensor)
-
-                # Mask invalid actions
-                action_mask = torch.tensor(self.env.get_valid_action_mask(state))
-                masked_logits = P_F_logits.where(
-                    action_mask.bool(), torch.tensor(-100.0)
-                )
-
-                # Sample from policy
-                probs = F.softmax(masked_logits, dim=0)
-                action_idx = torch.multinomial(probs, 1).item()
-                action = self.env.index_to_action(action_idx)
-
-            next_state = self.env.take_action(state, action)
-            trajectory.append(next_state)
-            state = next_state
-
-        return trajectory
-
-    def sample_batch(
-        self, batch_size: int, max_steps: int = 20
-    ) -> List[List[Tuple[float, ...]]]:
-        """Sample batch of trajectories"""
-        trajectories = []
-        for _ in range(batch_size):
-            traj = self.sample_trajectory(max_steps)
-            trajectories.append(traj)
-        return trajectories
-
-
 # ====================================================
 # MLflow Trajectory Balance Experiment
 # ====================================================
@@ -806,18 +809,22 @@ def trajectory_balance_experiment(
         mlflow.log_param("method", "trajectory_balance")
 
         # ====================================================
-        # Setup Environment and Model
+        # Setup Environment
         # ====================================================
         env = HyperGrid(size=grid_size, reward_region_size=reward_region_size)
         state_dim = env.get_state_dim()
 
         mlflow.log_param("state_dim", state_dim)
 
+        # ====================================================
         # Create model and optimizer
+        # ====================================================
         model = TBModel(state_dim, hidden_dim)
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
+        # ====================================================
         # Create policy-based sampler
+        # ====================================================
         sampler = PolicyTrajectorySampler(env, model, epsilon)
 
         mlflow.log_param("initial_logZ", model.logZ.item())
@@ -832,6 +839,7 @@ def trajectory_balance_experiment(
         # ====================================================
         # Training Loop
         # ====================================================
+
         losses = []
         log_z_values = []
         all_trajectories = []
@@ -850,10 +858,13 @@ def trajectory_balance_experiment(
                 if env.is_terminal(traj[-1]):
                     successful_trajectories.append(traj)
 
+            # ====================================================
+            # Update model
+            # ====================================================
+
             # Compute trajectory balance loss
             loss = trajectory_balance_loss(model, step_trajectories, env)
 
-            # Update model
             optimizer.zero_grad()
             loss.backward()
 
@@ -898,6 +909,7 @@ def trajectory_balance_experiment(
         # ====================================================
         # Final Evaluation
         # ====================================================
+
         print(f"🎯 Final evaluation...")
 
         # Test final policy (no exploration)
