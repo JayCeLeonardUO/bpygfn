@@ -1,9 +1,73 @@
+import colorsys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import bpy
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from mpl_toolkits.mplot3d import Axes3D
+
+import random
+import time
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+# Detect holes using fill method
+from scipy import ndimage
+
+import numpy as np
+import torch
+from scipy import ndimage
+from typing import List, Optional, Tuple, Union
+import bpy
+import colorsys
+
+
+import numpy as np
+import torch
+from scipy import ndimage
+from typing import List, Optional, Tuple, Union
+import bpy
+import colorsys
+
+
+# ====================================================
+# Color Logic
+# ====================================================
+
+
+class ColorID(IntEnum):
+    """Predefined color IDs for easy reference"""
+
+    BLACK = 0
+    WHITE = 1
+    RED = 2
+    GREEN = 3
+    BLUE = 4
+    YELLOW = 5
+    MAGENTA = 6
+    CYAN = 7
+    # IDs 8+ are procedurally generated
+
+
+class RGBA(NamedTuple):
+    """Named tuple for RGBA color values (0.0 to 1.0)"""
+
+    red: float
+    green: float
+    blue: float
+    alpha: float = 1.0
+
+    def __str__(self):
+        return f"RGBA(r={self.red:.1f}, g={self.green:.1f}, b={self.blue:.1f}, a={self.alpha:.1f})"
 
 
 @dataclass
@@ -44,11 +108,468 @@ class ColorRampState:
         return self.scale is not None and len(self.colors) >= max_colors
 
 
+# ====================================================
+# Blender Experiment Environment
+# ====================================================
+
+
+import numpy as np
+import torch
+from scipy import ndimage
+from typing import List, Optional, Tuple, Union, NamedTuple
+import bpy
+import colorsys
+from enum import IntEnum
+
+
+class RGBA(NamedTuple):
+    """Named tuple for RGBA color values (0.0 to 1.0)"""
+
+    red: float
+    green: float
+    blue: float
+    alpha: float = 1.0
+
+    def __str__(self):
+        return f"RGBA(r={self.red:.1f}, g={self.green:.1f}, b={self.blue:.1f}, a={self.alpha:.1f})"
+
+
+class ColorID(IntEnum):
+    """Predefined color IDs for easy reference"""
+
+    BLACK = 0
+    WHITE = 1
+    RED = 2
+    GREEN = 3
+    BLUE = 4
+    YELLOW = 5
+    MAGENTA = 6
+    CYAN = 7
+    # IDs 8+ are procedurally generated
+
+
 class BlenderColorRampEnvironment:
     """
     Blender environment for color ramp generation - composition based.
     Similar to your HyperGrid approach.
     """
+
+    class ColorUtilities:
+        """
+        Nested utility class for color operations and position calculations.
+        """
+
+        # Predefined color palette using RGBA named tuples
+        BASIC_COLORS = {
+            ColorID.BLACK: RGBA(0.0, 0.0, 0.0, 1.0),
+            ColorID.WHITE: RGBA(1.0, 1.0, 1.0, 1.0),
+            ColorID.RED: RGBA(1.0, 0.0, 0.0, 1.0),
+            ColorID.GREEN: RGBA(0.0, 1.0, 0.0, 1.0),
+            ColorID.BLUE: RGBA(0.0, 0.0, 1.0, 1.0),
+            ColorID.YELLOW: RGBA(1.0, 1.0, 0.0, 1.0),
+            ColorID.MAGENTA: RGBA(1.0, 0.0, 1.0, 1.0),
+            ColorID.CYAN: RGBA(0.0, 1.0, 1.0, 1.0),
+        }
+
+        @staticmethod
+        def calculate_position(position_idx: int, max_colors: int) -> float:
+            """
+            Calculate normalized position (0.0 to 1.0) for color ramp.
+
+            Args:
+                position_idx: Index of position (0 to max_colors-1)
+                max_colors: Maximum number of color positions
+
+            Returns:
+                Normalized position between 0.0 and 1.0
+
+            Example:
+                >>> pos = ColorUtilities.calculate_position(2, 5)
+                >>> print(f"Position 2 of 5 = {pos:.1%}")  # "Position 2 of 5 = 60.0%"
+            """
+            return (position_idx + 1) / max_colors
+
+        @staticmethod
+        def color_id_to_rgba_tuple(color_id: int) -> Tuple[float, float, float, float]:
+            """
+            Convert color ID to RGBA tuple (for Blender compatibility).
+
+            Args:
+                color_id: Integer color identifier
+
+            Returns:
+                Tuple of (red, green, blue, alpha) values
+            """
+            rgba = BlenderColorRampEnvironment.ColorUtilities.color_id_to_rgba(color_id)
+            return (rgba.red, rgba.green, rgba.blue, rgba.alpha)
+
+        @staticmethod
+        def color_id_to_rgba(color_id: int) -> RGBA:
+            """
+            Convert color ID to RGBA tuple.
+
+            Args:
+                color_id: Integer color identifier
+
+            Returns:
+                RGBA named tuple with color values
+
+            Example:
+                >>> color = ColorUtilities.color_id_to_rgba(ColorID.RED)
+                >>> print(color)  # "RGBA(r=1.0, g=0.0, b=0.0, a=1.0)"
+            """
+            # Use predefined colors for IDs 0-7
+            if color_id in BlenderColorRampEnvironment.ColorUtilities.BASIC_COLORS:
+                return BlenderColorRampEnvironment.ColorUtilities.BASIC_COLORS[color_id]
+
+            # Generate procedural colors for higher IDs
+            return (
+                BlenderColorRampEnvironment.ColorUtilities._generate_procedural_color(
+                    color_id
+                )
+            )
+
+        @staticmethod
+        def _generate_procedural_color(color_id: int, max_colors: int = 32) -> RGBA:
+            """
+            Generate procedural color using HSV color space.
+
+            Args:
+                color_id: Color identifier (should be >= 8)
+                max_colors: Total number of available colors
+
+            Returns:
+                RGBA named tuple with generated color
+            """
+            # Map color_id to hue (0-360 degrees)
+            hue_range = max_colors - 8  # Colors 8+ are procedural
+            hue = ((color_id - 8) / hue_range) * 360
+
+            # Vary saturation and value for variety
+            saturation = 0.8 if color_id % 2 == 0 else 1.0
+            value = 0.9 if color_id % 3 == 0 else 0.7
+
+            # Convert HSV to RGB
+            r, g, b = colorsys.hsv_to_rgb(hue / 360, saturation, value)
+
+            return RGBA(r, g, b, 1.0)
+
+        @staticmethod
+        def get_color_name(color_id: int) -> str:
+            """
+            Get human-readable name for color ID.
+
+            Example:
+                >>> name = ColorUtilities.get_color_name(ColorID.RED)
+                >>> print(name)  # "Red"
+            """
+            color_names = {
+                ColorID.BLACK: "Black",
+                ColorID.WHITE: "White",
+                ColorID.RED: "Red",
+                ColorID.GREEN: "Green",
+                ColorID.BLUE: "Blue",
+                ColorID.YELLOW: "Yellow",
+                ColorID.MAGENTA: "Magenta",
+                ColorID.CYAN: "Cyan",
+            }
+
+            if color_id in color_names:
+                return color_names[color_id]
+            else:
+                return f"Generated-{color_id}"
+
+        @staticmethod
+        def describe_color_ramp(state_colors: dict, max_colors: int) -> str:
+            """
+            Create human-readable description of color ramp.
+
+            Example:
+                >>> description = ColorUtilities.describe_color_ramp({1: 2, 3: 5}, 5)
+                >>> print(description)
+                # "Color Ramp: 40.0% Red, 80.0% Yellow"
+            """
+            if not state_colors:
+                return "Color Ramp: Default (Black to White)"
+
+            descriptions = []
+            for pos_idx in sorted(state_colors.keys()):
+                color_id = state_colors[pos_idx]
+                position_percent = (
+                    BlenderColorRampEnvironment.ColorUtilities.calculate_position(
+                        pos_idx, max_colors
+                    )
+                    * 100
+                )
+                color_name = BlenderColorRampEnvironment.ColorUtilities.get_color_name(
+                    color_id
+                )
+                descriptions.append(f"{position_percent:.1f}% {color_name}")
+
+            return "Color Ramp: " + ", ".join(descriptions)
+
+    def visualize_state_translation(self, state: "ColorRampState") -> str:
+        """
+        Visualize what will be translated to Blender for a given state.
+
+        Args:
+            state: ColorRampState to visualize
+
+        Returns:
+            String description of the translation
+
+        Example:
+            >>> env = BlenderColorRampEnvironment(max_colors=5)
+            >>> state = ColorRampState(scale=10.0, colors={1: 2, 3: 5})
+            >>> print(env.visualize_state_translation(state))
+        """
+        lines = []
+        lines.append("=" * 60)
+        lines.append("BLENDER STATE TRANSLATION PREVIEW")
+        lines.append("=" * 60)
+
+        # Scale information
+        if state.scale is not None:
+            lines.append(f"Noise Scale: {state.scale}")
+        else:
+            lines.append("Noise Scale: NOT SET (will be set first)")
+
+        lines.append("")
+
+        # Color ramp information
+        lines.append("Color Ramp Configuration:")
+
+        if not state.colors:
+            lines.append("  Default Gradient:")
+            lines.append("    0.0% (0.000) -> Black (0.0, 0.0, 0.0, 1.0)")
+            lines.append("  100.0% (1.000) -> White (1.0, 1.0, 1.0, 1.0)")
+        else:
+            lines.append("  Custom Colors:")
+            for position_idx in sorted(state.colors.keys()):
+                color_id = state.colors[position_idx]
+
+                # Calculate position
+                normalized_pos = self.ColorUtilities.calculate_position(
+                    position_idx, self.max_colors
+                )
+
+                # Get color info
+                color_name = self.ColorUtilities.get_color_name(color_id)
+                rgba_tuple = self.ColorUtilities.color_id_to_rgba_tuple(color_id)
+
+                lines.append(
+                    f"    {normalized_pos:.1%} ({normalized_pos:.3f}) -> {color_name} {rgba_tuple}"
+                )
+
+        lines.append("")
+
+        # Summary
+        description = self.ColorUtilities.describe_color_ramp(
+            state.colors, self.max_colors
+        )
+        lines.append(f"Summary: {description}")
+
+        lines.append("=" * 60)
+
+        return "\n".join(lines)
+
+    def debug_state_translation(self, state: "ColorRampState") -> dict:
+        """
+        Get detailed debug information about state translation.
+
+        Args:
+            state: ColorRampState to debug
+
+        Returns:
+            Dictionary with translation details
+        """
+        debug_info = {
+            "state": state,
+            "scale": state.scale,
+            "num_colors": len(state.colors),
+            "color_positions": {},
+            "blender_ready": self.created_nodes is not None,
+        }
+
+        # Process each color
+        for position_idx, color_id in state.colors.items():
+            normalized_pos = self.ColorUtilities.calculate_position(
+                position_idx, self.max_colors
+            )
+            color_name = self.ColorUtilities.get_color_name(color_id)
+            rgba_tuple = self.ColorUtilities.color_id_to_rgba_tuple(color_id)
+
+            debug_info["color_positions"][position_idx] = {
+                "color_id": color_id,
+                "color_name": color_name,
+                "position_idx": position_idx,
+                "normalized_position": normalized_pos,
+                "rgba_tuple": rgba_tuple,
+            }
+
+        return debug_info
+        """
+        Nested utility class for Blender operations within the environment.
+        """
+
+    class BlenderUtilities:
+        """
+        Nested utility class for Blender operations within the environment.
+        """
+
+        @staticmethod
+        def extract_terrain_tensor(plane) -> Optional[torch.Tensor]:
+            """
+            Extract terrain height data from Blender plane as tensor.
+
+            Args:
+                plane: Blender plane object
+
+            Returns:
+                2D tensor of height values, or None if extraction fails
+            """
+            try:
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                plane_eval = plane.evaluated_get(depsgraph)
+                mesh = plane_eval.to_mesh()
+
+                # Extract vertex heights
+                verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
+                grid_size = int(np.sqrt(len(verts)))
+                heights = verts[:, 2].reshape(grid_size, grid_size)
+                tensor = torch.from_numpy(heights).float()
+
+                # Clean up Blender mesh
+                plane_eval.to_mesh_clear()
+
+                return tensor
+
+            except Exception as e:
+                print(f"Error extracting terrain tensor: {e}")
+                return None
+
+        @staticmethod
+        def translate_state_to_blender(
+            state: "ColorRampState", created_nodes: dict, max_colors: int
+        ) -> bool:
+            """
+            Translate ColorRampState to Blender color ramp.
+
+            Args:
+                state: ColorRampState to translate
+                created_nodes: Dictionary of Blender nodes
+                max_colors: Maximum number of colors
+
+            Returns:
+                True if successfully translated, False otherwise
+            """
+            try:
+                # Apply noise scale
+                if state.scale is not None and "noise" in created_nodes:
+                    noise_node = created_nodes["noise"]
+                    noise_node.inputs["Scale"].default_value = state.scale
+                    print(f"  Applied noise scale: {state.scale}")
+
+                # Apply color ramp
+                if "ramp" in created_nodes:
+                    ramp_node = created_nodes["ramp"]
+                    color_ramp = ramp_node.color_ramp
+
+                    # Clear existing points
+                    while len(color_ramp.elements) > 0:
+                        color_ramp.elements.remove(color_ramp.elements[0])
+
+                    # Add color points
+                    if not state.colors:
+                        # Default black to white gradient
+                        elem0 = color_ramp.elements.new(0.0)
+                        elem0.color = (0.0, 0.0, 0.0, 1.0)  # Black tuple
+                        elem1 = color_ramp.elements.new(1.0)
+                        elem1.color = (1.0, 1.0, 1.0, 1.0)  # White tuple
+                        print("  Applied default black-to-white gradient")
+                    else:
+                        # Add colors at their calculated positions
+                        for position_idx in sorted(state.colors.keys()):
+                            color_id = state.colors[position_idx]
+
+                            # Calculate normalized position
+                            normalized_pos = (position_idx + 1) / max_colors
+
+                            # Get RGBA color as tuple (not named tuple for Blender compatibility)
+                            rgba_tuple = BlenderColorRampEnvironment.ColorUtilities.color_id_to_rgba_tuple(
+                                color_id
+                            )
+
+                            # Create color ramp element
+                            elem = color_ramp.elements.new(normalized_pos)
+                            elem.color = rgba_tuple
+
+                            # Debug print
+                            color_name = BlenderColorRampEnvironment.ColorUtilities.get_color_name(
+                                color_id
+                            )
+                            print(
+                                f"  Added {color_name} at {normalized_pos:.1%} - {rgba_tuple}"
+                            )
+
+                # Force Blender update
+                bpy.context.view_layer.update()
+                return True
+
+            except Exception as e:
+                print(f"Error translating state to Blender: {e}")
+                return False
+
+    class RewardUtilities:
+        """
+        Nested utility class for reward calculations within the Blender environment.
+        """
+
+        @staticmethod
+        def detect_holes(
+            tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
+        ) -> bool:
+            """
+            Detect holes in terrain data using binary fill method.
+
+            Args:
+                tensor: 2D array/tensor of height values
+                threshold: Height threshold for binary mask creation
+
+            Returns:
+                True if holes are detected, False otherwise
+            """
+            # Convert to numpy if needed
+            if torch.is_tensor(tensor):
+                noise = tensor.numpy()
+            else:
+                noise = tensor
+
+            # Create binary mask
+            binary_mask = noise > threshold
+            filled = ndimage.binary_fill_holes(binary_mask)
+            has_holes = (filled.sum() - binary_mask.sum()) > 0
+
+            return has_holes
+
+        @staticmethod
+        def compute_reward(
+            tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
+        ) -> float:
+            """
+            Compute reward based on hole detection.
+
+            Args:
+                tensor: 2D array/tensor of height values
+                threshold: Height threshold for binary mask creation
+
+            Returns:
+                1.0 if no holes detected, 0.0 if holes detected
+            """
+            has_holes = BlenderColorRampEnvironment.RewardUtilities.detect_holes(
+                tensor, threshold
+            )
+            return 0.0 if has_holes else 1.0
 
     def __init__(
         self,
@@ -74,7 +595,7 @@ class BlenderColorRampEnvironment:
         print(f"  Color choices: {num_color_choices}")
         print(f"  Available scales: {len(self.available_scales)}")
 
-    def get_initial_state(self) -> ColorRampState:
+    def get_initial_state(self) -> "ColorRampState":
         """
         Get the initial empty state.
 
@@ -86,7 +607,7 @@ class BlenderColorRampEnvironment:
         """
         return ColorRampState()
 
-    def get_valid_actions(self, state: ColorRampState) -> List[int]:
+    def get_valid_actions(self, state: "ColorRampState") -> List[int]:
         """
         Get all valid actions from current state.
 
@@ -117,7 +638,7 @@ class BlenderColorRampEnvironment:
 
         return valid_actions
 
-    def apply_action(self, state: ColorRampState, action: int) -> ColorRampState:
+    def apply_action(self, state: "ColorRampState", action: int) -> "ColorRampState":
         """
         Apply action to state to get next state.
 
@@ -152,7 +673,7 @@ class BlenderColorRampEnvironment:
 
         return next_state
 
-    def is_terminal(self, state: ColorRampState) -> bool:
+    def is_terminal(self, state: "ColorRampState") -> bool:
         """
         Check if state is terminal.
 
@@ -163,7 +684,7 @@ class BlenderColorRampEnvironment:
         """
         return state.is_terminal(self.max_colors)
 
-    def get_reward(self, state: ColorRampState) -> float:
+    def get_reward(self, state: "ColorRampState") -> float:
         """
         Get reward for terminal state.
 
@@ -200,43 +721,33 @@ class BlenderColorRampEnvironment:
 
                 # Add color points
                 if not state.colors:
-                    # Default black to white
+                    # Default black to white gradient
                     elem0 = color_ramp.elements.new(0.0)
-                    elem0.color = (0, 0, 0, 1)
+                    elem0.color = self.ColorUtilities.BASIC_COLORS[ColorID.BLACK]
                     elem1 = color_ramp.elements.new(1.0)
-                    elem1.color = (1, 1, 1, 1)
+                    elem1.color = self.ColorUtilities.BASIC_COLORS[ColorID.WHITE]
                 else:
-                    # Add colors at their positions
+                    # Add colors at their calculated positions
                     for position_idx in sorted(state.colors.keys()):
                         color_id = state.colors[position_idx]
-                        normalized_pos = (position_idx + 1) / self.max_colors
 
-                        # Convert color ID to RGBA
-                        if color_id == 0:
-                            rgba = (0.0, 0.0, 0.0, 1.0)  # Black
-                        elif color_id == 1:
-                            rgba = (1.0, 1.0, 1.0, 1.0)  # White
-                        elif color_id < 8:
-                            colors = [
-                                (1.0, 0.0, 0.0, 1.0),
-                                (0.0, 1.0, 0.0, 1.0),
-                                (0.0, 0.0, 1.0, 1.0),
-                                (1.0, 1.0, 0.0, 1.0),
-                                (1.0, 0.0, 1.0, 1.0),
-                                (0.0, 1.0, 1.0, 1.0),
-                            ]
-                            rgba = colors[color_id - 2]
-                        else:
-                            import colorsys
+                        # Calculate normalized position using utility
+                        normalized_pos = self.ColorUtilities.calculate_position(
+                            position_idx, self.max_colors
+                        )
 
-                            hue = ((color_id - 8) / (32 - 8)) * 360
-                            saturation = 0.8 if color_id % 2 == 0 else 1.0
-                            value = 0.9 if color_id % 3 == 0 else 0.7
-                            r, g, b = colorsys.hsv_to_rgb(hue / 360, saturation, value)
-                            rgba = (r, g, b, 1.0)
+                        # Get RGBA color using utility
+                        rgba_color = self.ColorUtilities.color_id_to_rgba(color_id)
 
+                        # Create color ramp element
                         elem = color_ramp.elements.new(normalized_pos)
-                        elem.color = rgba
+                        elem.color = rgba_color  # RGBA named tuple works directly
+
+                        # Debug print
+                        color_name = self.ColorUtilities.get_color_name(color_id)
+                        print(
+                            f"  Added {color_name} at {normalized_pos:.1%} - {rgba_color}"
+                        )
 
             # Force Blender update
             bpy.context.view_layer.update()
@@ -247,43 +758,15 @@ class BlenderColorRampEnvironment:
             if not self.plane:
                 raise ValueError("Blender not connected")
 
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            plane_eval = self.plane.evaluated_get(depsgraph)
-            mesh = plane_eval.to_mesh()
-
-            # Extract vertex heights
-            verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
-            grid_size = int(np.sqrt(len(verts)))
-            heights = verts[:, 2].reshape(grid_size, grid_size)
-            tensor = torch.from_numpy(heights).float()
-
-            # Clean up Blender mesh
-            plane_eval.to_mesh_clear()
+            tensor = self.BlenderUtilities.extract_terrain_tensor(self.plane)
+            if tensor is None:
+                return 0.0
 
             # ====================================================
-            # Hole detection
+            # REWARD LOGIC: Use nested RewardUtilities class
             # ====================================================
             threshold = 0.5
-
-            # Convert to numpy if needed
-            if torch.is_tensor(tensor):
-                noise = tensor.numpy()
-            else:
-                noise = tensor
-
-            # Create binary mask
-            binary_mask = noise > threshold
-
-            # Detect holes using fill method
-            from scipy import ndimage
-
-            filled = ndimage.binary_fill_holes(binary_mask)
-            has_holes = (filled.sum() - binary_mask.sum()) > 0
-
-            # ====================================================
-            # Return reward
-            # ====================================================
-            return 0.0 if has_holes else 1.0
+            return self.RewardUtilities.compute_reward(tensor, threshold)
 
         except Exception as e:
             print(f"Error getting reward: {e}")
@@ -304,7 +787,7 @@ class BlenderColorRampEnvironment:
         print("🔗 Connected to Blender")
 
 
-class BlenderSamplerUtility:
+class BlenderTrajectorySamplerUtilities:
     """
     Static utility functions for sampling trajectories with Blender environments.
     No state, just pure functions.
@@ -350,7 +833,7 @@ class BlenderSamplerUtility:
         """
         trajectories = []
         for i in range(n_trajectories):
-            trajectory = BlenderSamplerUtility.sample_trajectory(env)
+            trajectory = BlenderTrajectorySamplerUtilities.sample_trajectory(env)
             trajectories.append(trajectory)
 
             if (i + 1) % 10 == 0:
@@ -403,7 +886,7 @@ class BlenderSamplerUtility:
             >>> print(f"Average reward: {np.mean(rewards):.3f}")
         """
         return [
-            BlenderSamplerUtility.evaluate_trajectory(env, traj)
+            BlenderTrajectorySamplerUtilities.evaluate_trajectory(env, traj)
             for traj in trajectories
         ]
 
@@ -420,18 +903,11 @@ class BlenderSamplerUtility:
             >>> success_rate = sum(1 for s in stats if s['reward'] > 0) / len(stats)
             >>> print(f"Success rate: {success_rate:.2%}")
         """
-        trajectories = BlenderSamplerUtility.sample_batch(env, n_trajectories)
-        stats = BlenderSamplerUtility.evaluate_batch(env, trajectories)
+        trajectories = BlenderTrajectorySamplerUtilities.sample_batch(
+            env, n_trajectories
+        )
+        stats = BlenderTrajectorySamplerUtilities.evaluate_batch(env, trajectories)
         return trajectories, stats
-
-
-import colorsys
-from typing import Dict, List, Optional, Tuple
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from mpl_toolkits.mplot3d import Axes3D
 
 
 class BlenderVisualizationUtility:
@@ -955,3 +1431,422 @@ def create_blender_environment(
         >>> print(f"Created environment with {env.max_colors} max colors")
     """
     return BlenderColorRampEnvironment(max_colors, num_color_choices)
+
+
+class TBModel(nn.Module):
+    """Trajectory Balance GFlowNet Model - mirroring HyperGrid implementation"""
+
+    def __init__(self, state_dim: int, action_dim: int, hidden_size: int = 256):
+        super().__init__()
+
+        # Forward policy: current state -> next action probabilities
+        self.forward_policy = nn.Sequential(
+            nn.Linear(state_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, action_dim),
+        )
+
+        # Backward policy: current state -> previous action probabilities
+        self.backward_policy = nn.Sequential(
+            nn.Linear(state_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, action_dim),
+        )
+
+        # Log partition function
+        self.logZ = nn.Parameter(torch.tensor(5.0))
+
+    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returns both forward and backward policy logits"""
+        P_F_logits = self.forward_policy(state)
+        P_B_logits = self.backward_policy(state)
+        return P_F_logits, P_B_logits
+
+
+def state_to_tensor(env, state):
+    """Convert ColorRampState to tensor representation"""
+    encoding = []
+
+    # Scale encoding (one-hot)
+    if state.scale is None:
+        scale_encoding = [0.0] * len(env.available_scales)
+    else:
+        scale_encoding = [0.0] * len(env.available_scales)
+        if state.scale in env.available_scales:
+            scale_idx = env.available_scales.index(state.scale)
+            scale_encoding[scale_idx] = 1.0
+    encoding.extend(scale_encoding)
+
+    # Color encoding (one-hot for each position)
+    for pos in range(env.max_colors):
+        if pos in state.colors:
+            color_id = state.colors[pos]
+            color_encoding = [0.0] * env.num_color_choices
+            if 0 <= color_id < env.num_color_choices:
+                color_encoding[color_id] = 1.0
+        else:
+            color_encoding = [0.0] * env.num_color_choices
+        encoding.extend(color_encoding)
+
+    # Step count (normalized)
+    max_steps = env.max_colors + 1  # scale + colors
+    step_encoding = [state.step_count / max_steps]
+    encoding.extend(step_encoding)
+
+    return torch.tensor(encoding, dtype=torch.float32)
+
+
+class PolicyTrajectorySampler:
+    """Sample trajectories using learned policy - mirroring HyperGrid implementation"""
+
+    def __init__(self, env, model: TBModel = None, epsilon: float = 0.2):
+        self.env = env
+        self.model = model
+        self.epsilon = epsilon
+
+    def sample_trajectory(self, max_steps: int = 20):
+        """Sample trajectory using policy with epsilon-greedy exploration"""
+        trajectory = []
+        state = self.env.get_initial_state()
+
+        for _ in range(max_steps):
+            if self.env.is_terminal(state):
+                break
+
+            valid_actions = self.env.get_valid_actions(state)
+            if not valid_actions:
+                break
+
+            if self.model is None or random.random() < self.epsilon:
+                # Random exploration
+                action = random.choice(valid_actions)
+            else:
+                # Use learned policy
+                state_tensor = state_to_tensor(self.env, state)
+                P_F_logits, _ = self.model(state_tensor)
+
+                # Mask invalid actions
+                action_mask = torch.tensor(
+                    [
+                        1.0 if a in valid_actions else 0.0
+                        for a in range(P_F_logits.shape[0])
+                    ]
+                )
+                masked_logits = P_F_logits.where(
+                    action_mask.bool(), torch.tensor(-100.0)
+                )
+
+                # Sample from policy
+                probs = F.softmax(masked_logits, dim=0)
+                action = torch.multinomial(probs, 1).item()
+
+            trajectory.append(state.copy())
+            state = self.env.apply_action(state, action)
+
+        return trajectory
+
+    def sample_batch(self, batch_size: int, max_steps: int = 20):
+        """Sample batch of trajectories"""
+        trajectories = []
+        for _ in range(batch_size):
+            traj = self.sample_trajectory(max_steps)
+            trajectories.append(traj)
+        return trajectories
+
+
+def trajectory_balance_loss(model: TBModel, trajectories, env):
+    """
+    Trajectory Balance Loss - mirroring HyperGrid implementation
+    """
+    if len(trajectories) == 0:
+        return torch.tensor(0.0, requires_grad=True)
+
+    total_loss = torch.tensor(0.0, requires_grad=True)
+
+    for traj in trajectories:
+        if len(traj) < 2:  # Skip invalid trajectories
+            continue
+
+        # ====================================================
+        # FORWARD path: Z_θ * ∏P_F(s_t|s_{t-1})
+        # ====================================================
+        log_forward = model.logZ
+
+        for step in range(len(traj) - 1):
+            current_state = traj[step]
+            next_state = traj[step + 1]
+
+            # Encode current state for neural network
+            current_tensor = state_to_tensor(env, current_state)
+
+            # Get forward policy logits
+            P_F_logits, _ = model(current_tensor)
+
+            # Find which action was taken
+            valid_actions = env.get_valid_actions(current_state)
+            action_taken = None
+
+            for action in valid_actions:
+                if env.apply_action(current_state, action) == next_state:
+                    action_taken = action
+                    break
+
+            if action_taken is not None:
+                # Mask invalid actions
+                action_mask = torch.tensor(
+                    [
+                        1.0 if a in valid_actions else 0.0
+                        for a in range(P_F_logits.shape[0])
+                    ]
+                )
+                masked_logits = P_F_logits.where(
+                    action_mask.bool(), torch.tensor(-100.0)
+                )
+
+                # Get probabilities
+                probs = F.softmax(masked_logits, dim=0)
+                log_forward = log_forward + torch.log(
+                    probs[action_taken].clamp(min=1e-8)
+                )
+
+        # ====================================================
+        # BACKWARD path: R(x) * ∏P_B(s_{t-1}|s_t)
+        # ====================================================
+        reward = env.get_reward(traj[-1])
+
+        # Handle zero rewards by using a small epsilon instead of log(0)
+        if reward <= 0:
+            reward = 1e-8
+
+        log_backward = torch.log(torch.tensor(reward, dtype=torch.float))
+
+        for step in range(len(traj) - 1, 0, -1):
+            current_state = traj[step]
+            prev_state = traj[step - 1]
+
+            # Encode current state
+            current_tensor = state_to_tensor(env, current_state)
+
+            # Get backward policy logits
+            _, P_B_logits = model(current_tensor)
+
+            # Find valid previous actions
+            valid_prev_actions = []
+            action_taken = None
+
+            for action in range(P_B_logits.shape[0]):
+                try:
+                    # Check if taking this action from prev_state leads to current_state
+                    if action in env.get_valid_actions(prev_state):
+                        test_next_state = env.apply_action(prev_state, action)
+                        if test_next_state == current_state:
+                            valid_prev_actions.append(action)
+                            action_taken = action
+                except:
+                    continue
+
+            if valid_prev_actions and action_taken is not None:
+                # Create mask and apply
+                prev_action_mask = torch.tensor(
+                    [
+                        1.0 if a in valid_prev_actions else 0.0
+                        for a in range(P_B_logits.shape[0])
+                    ]
+                )
+                masked_logits = P_B_logits.where(
+                    prev_action_mask.bool(), torch.tensor(-100.0)
+                )
+                probs = F.softmax(masked_logits, dim=0)
+
+                log_backward = log_backward + torch.log(
+                    probs[action_taken].clamp(min=1e-8)
+                )
+
+        # ====================================================
+        # Apply trajectory balance equation
+        # ====================================================
+        trajectory_loss = (log_forward - log_backward) ** 2
+        total_loss = total_loss + trajectory_loss
+
+    return total_loss / len(trajectories)
+
+
+def trajectory_balance_experiment(
+    env: BlenderColorRampEnvironment,
+    lr: float = 0.001,
+    hidden_dim: int = 128,
+    n_steps: int = 1000,
+    batch_size: int = 32,
+    epsilon: float = 0.3,
+    max_trajectory_steps: int = 20,
+):
+    """
+    Complete trajectory balance experiment - mirroring HyperGrid implementation
+    """
+
+    print(f"🚀 Training Trajectory Balance GFlowNet on Blender Environment")
+    print(f"   Hidden dim: {hidden_dim}")
+    print(f"   Learning rate: {lr}")
+    print(f"   Training steps: {n_steps}")
+    print(f"   Batch size: {batch_size}")
+
+    # ====================================================
+    # Setup Environment and Model
+    # ====================================================
+    dummy_state = env.get_initial_state()
+    state_dim = state_to_tensor(env, dummy_state).shape[0]
+    action_dim = len(env.available_scales) + env.max_colors * env.num_color_choices
+
+    print(f"   State dim: {state_dim}")
+    print(f"   Action dim: {action_dim}")
+
+    # ====================================================
+    # Create model and optimizer
+    # ====================================================
+    model = TBModel(state_dim, action_dim, hidden_dim)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # ====================================================
+    # Create policy-based sampler
+    # ====================================================
+    sampler = PolicyTrajectorySampler(env, model, epsilon)
+
+    print(f"   Initial logZ: {model.logZ.item():.4f}")
+
+    # ====================================================
+    # Training Loop
+    # ====================================================
+    losses = []
+    log_z_values = []
+    all_trajectories = []
+    successful_trajectories = []
+
+    for step in range(n_steps):
+        # Sample trajectories using current policy
+        step_trajectories = sampler.sample_batch(batch_size, max_trajectory_steps)
+        all_trajectories.extend(step_trajectories)
+
+        # Collect successful trajectories
+        for traj in step_trajectories:
+            if len(traj) > 0 and env.get_reward(traj[-1]) > 0:
+                successful_trajectories.append(traj)
+
+        # ====================================================
+        # Update model
+        # ====================================================
+        loss = trajectory_balance_loss(model, step_trajectories, env)
+
+        optimizer.zero_grad()
+        loss.backward()
+
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+
+        optimizer.step()
+
+        loss_value = loss.item()
+        losses.append(loss_value)
+        log_z_values.append(model.logZ.item())
+
+        # Print progress
+        if step % 50 == 0:
+            success_count = sum(
+                1
+                for traj in step_trajectories
+                if len(traj) > 0 and env.get_reward(traj[-1]) > 0
+            )
+            success_rate = success_count / len(step_trajectories)
+            avg_length = sum(len(traj) for traj in step_trajectories) / len(
+                step_trajectories
+            )
+
+            print(
+                f"Step {step:4d}: Loss={loss_value:.4f}, LogZ={model.logZ.item():.3f}, "
+                f"Success={success_rate:.1%}, AvgLen={avg_length:.1f}, "
+                f"TotalSucc={len(successful_trajectories)}"
+            )
+
+    # ====================================================
+    # Final Evaluation
+    # ====================================================
+    print(f"🎯 Final evaluation...")
+
+    # Test final policy (no exploration)
+    test_sampler = PolicyTrajectorySampler(env, model, epsilon=0.0)
+    test_trajectories = test_sampler.sample_batch(100, max_trajectory_steps)
+
+    test_successful = sum(
+        1
+        for traj in test_trajectories
+        if len(traj) > 0 and env.get_reward(traj[-1]) > 0
+    )
+    test_success_rate = test_successful / len(test_trajectories)
+
+    # Final metrics
+    final_loss = losses[-1]
+    final_logZ = log_z_values[-1]
+
+    # Overall training success rate
+    total_successful = sum(
+        1 for traj in all_trajectories if len(traj) > 0 and env.get_reward(traj[-1]) > 0
+    )
+    overall_success_rate = total_successful / len(all_trajectories)
+
+    print(f"\n📊 Final Results:")
+    print(f"   Loss: {final_loss:.6f}")
+    print(f"   LogZ: {final_logZ:.4f}")
+    print(f"   Training Success: {overall_success_rate:.2%}")
+    print(f"   Test Success: {test_success_rate:.2%}")
+    print(f"   Total Trajectories: {len(all_trajectories)}")
+    print(f"   Successful Trajectories: {len(successful_trajectories)}")
+
+    return {
+        "model": model,
+        "losses": losses,
+        "log_z_values": log_z_values,
+        "successful_trajectories": successful_trajectories,
+        "test_success_rate": test_success_rate,
+        "overall_success_rate": overall_success_rate,
+        "final_loss": final_loss,
+    }
+
+
+def run_blender_experiment(env):
+    """
+    Run a simple Blender GFlowNet experiment
+
+    Example:
+        >>> env = create_blender_environment(max_colors=5)
+        >>> env.connect_blender(plane, modifier, nodes)
+        >>> results = run_blender_experiment(env)
+    """
+    print("🧪 Running Blender GFlowNet Experiment")
+
+    # Run experiment
+    results = trajectory_balance_experiment(
+        env, lr=0.001, hidden_dim=128, n_steps=1000, batch_size=32
+    )
+
+    # Basic visualization if successful trajectories found
+    if results["successful_trajectories"]:
+        print(
+            f"✅ Found {len(results['successful_trajectories'])} successful trajectories!"
+        )
+
+        # Show a few successful examples
+        for i, traj in enumerate(results["successful_trajectories"][:3]):
+            final_state = traj[-1]
+            print(
+                f"Success {i + 1}: Scale={final_state.scale}, Colors={final_state.colors}"
+            )
+    else:
+        print("❌ No successful trajectories found")
+
+    return results
+
+
+if __name__ == "__main__":
+    print("🧪 Blender GFlowNet Training Ready")
+    print("Usage:")
+    print("  results = run_blender_experiment(env)")
+    print("  results = trajectory_balance_experiment(env, lr=0.001, n_steps=500)")
