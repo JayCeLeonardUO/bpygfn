@@ -1,73 +1,26 @@
 import colorsys
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-import bpy
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from mpl_toolkits.mplot3d import Axes3D
-
 import random
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 
+import bpy
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from mpl_toolkits.mplot3d import Axes3D
 
 # Detect holes using fill method
 from scipy import ndimage
 
-import numpy as np
-import torch
-from scipy import ndimage
-from typing import List, Optional, Tuple, Union
-import bpy
-import colorsys
-
-
-import numpy as np
-import torch
-from scipy import ndimage
-from typing import List, Optional, Tuple, Union
-import bpy
-import colorsys
-
-
 # ====================================================
 # Color Logic
 # ====================================================
-
-
-class ColorID(IntEnum):
-    """Predefined color IDs for easy reference"""
-
-    BLACK = 0
-    WHITE = 1
-    RED = 2
-    GREEN = 3
-    BLUE = 4
-    YELLOW = 5
-    MAGENTA = 6
-    CYAN = 7
-    # IDs 8+ are procedurally generated
-
-
-class RGBA(NamedTuple):
-    """Named tuple for RGBA color values (0.0 to 1.0)"""
-
-    red: float
-    green: float
-    blue: float
-    alpha: float = 1.0
-
-    def __str__(self):
-        return f"RGBA(r={self.red:.1f}, g={self.green:.1f}, b={self.blue:.1f}, a={self.alpha:.1f})"
 
 
 @dataclass
@@ -111,15 +64,6 @@ class ColorRampState:
 # ====================================================
 # Blender Experiment Environment
 # ====================================================
-
-
-import numpy as np
-import torch
-from scipy import ndimage
-from typing import List, Optional, Tuple, Union, NamedTuple
-import bpy
-import colorsys
-from enum import IntEnum
 
 
 class RGBA(NamedTuple):
@@ -407,7 +351,75 @@ class BlenderColorRampEnvironment:
                 "rgba_tuple": rgba_tuple,
             }
 
-        return debug_info
+    def extract_blender_data(self, state: "ColorRampState") -> Optional[dict]:
+        """
+        Extract comprehensive data from Blender after applying a state.
+
+        Args:
+            state: ColorRampState to apply and extract data from
+
+        Returns:
+            Dictionary with all extracted Blender data
+        """
+        if not self.is_terminal(state):
+            print("Warning: State is not terminal, data may be incomplete")
+
+        try:
+            # Apply state to Blender
+            success = self.BlenderUtilities.translate_state_to_blender(
+                state, self.created_nodes, self.max_colors
+            )
+            if not success:
+                return None
+
+            # Extract height data
+            height_tensor = self.BlenderUtilities.extract_terrain_tensor(self.plane)
+
+            # Extract color data
+            color_data = self.BlenderUtilities.extract_color_data(self.plane)
+
+            # Sample noise and colors directly from nodes
+            noise_color_data = None
+            if (
+                self.created_nodes
+                and "noise" in self.created_nodes
+                and "ramp" in self.created_nodes
+            ):
+                noise_color_data = self.BlenderUtilities.sample_noise_and_colors(
+                    self.created_nodes["noise"],
+                    self.created_nodes["ramp"],
+                    sample_size=64,
+                )
+
+            # Get node configuration info
+            node_info = self.BlenderUtilities.get_node_configuration_info(
+                self.created_nodes
+            )
+
+            # Calculate reward
+            reward = (
+                self.RewardUtilities.compute_reward(height_tensor)
+                if height_tensor is not None
+                else 0.0
+            )
+
+            return {
+                "state": state,
+                "height_tensor": height_tensor,
+                "color_data": color_data,
+                "noise_color_data": noise_color_data,
+                "node_info": node_info,
+                "reward": reward,
+                "terrain_analysis": self.RewardUtilities.detect_holes(height_tensor)
+                if height_tensor is not None
+                else None,
+                "blender_connected": self.plane is not None
+                and self.created_nodes is not None,
+            }
+
+        except Exception as e:
+            print(f"Error extracting Blender data: {e}")
+            return None
         """
         Nested utility class for Blender operations within the environment.
         """
@@ -416,6 +428,91 @@ class BlenderColorRampEnvironment:
         """
         Nested utility class for Blender operations within the environment.
         """
+
+        @staticmethod
+        def create_color_ramp_procedure():
+            """Create the color ramp geometry node procedure"""
+
+            # Clear scene
+            bpy.ops.object.select_all(action="SELECT")
+            bpy.ops.object.delete()
+
+            for ng in bpy.data.node_groups:
+                bpy.data.node_groups.remove(ng)
+
+            # Create node group
+            node_group = bpy.data.node_groups.new("ColorRampGroup", "GeometryNodeTree")
+
+            # Add nodes
+            group_input = node_group.nodes.new("NodeGroupInput")
+            group_output = node_group.nodes.new("NodeGroupOutput")
+            noise = node_group.nodes.new("ShaderNodeTexNoise")
+            combine = node_group.nodes.new("ShaderNodeCombineXYZ")
+            ramp = node_group.nodes.new("ShaderNodeValToRGB")
+            set_pos = node_group.nodes.new("GeometryNodeSetPosition")
+
+            # Set up interface
+            node_group.interface.new_socket(
+                "Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+            )
+            node_group.interface.new_socket(
+                "Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+            )
+
+            # Connect nodes
+            node_group.links.new(noise.outputs["Fac"], combine.inputs["X"])
+            node_group.links.new(noise.outputs["Fac"], combine.inputs["Y"])
+            node_group.links.new(noise.outputs["Fac"], combine.inputs["Z"])
+            node_group.links.new(combine.outputs["Vector"], ramp.inputs["Fac"])
+            node_group.links.new(ramp.outputs["Color"], set_pos.inputs["Offset"])
+            node_group.links.new(group_input.outputs[0], set_pos.inputs["Geometry"])
+            node_group.links.new(set_pos.outputs["Geometry"], group_output.inputs[0])
+
+            # Create plane
+            bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, 0))
+            plane = bpy.context.active_object
+
+            # Add subdivisions
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.subdivide(number_cuts=15)
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+            # Add geometry nodes modifier
+            geo_mod = plane.modifiers.new("GeometryNodes", "NODES")
+            geo_mod.node_group = node_group
+
+            return plane, {"noise": noise, "ramp": ramp}
+
+        @staticmethod
+        def update_procedure_parameters(nodes, config):
+            """Update the procedure parameters with config"""
+
+            # Update noise parameters
+            nodes["noise"].inputs["Scale"].default_value = config["noise_scale"]
+            nodes["noise"].inputs["Detail"].default_value = config["noise_detail"]
+            nodes["noise"].inputs["Roughness"].default_value = config["noise_roughness"]
+
+            # Update color ramp
+            color_ramp = nodes["ramp"].color_ramp
+            color_ramp.interpolation = "B_SPLINE"
+
+            # Clear existing elements
+            while len(color_ramp.elements) > 2:
+                color_ramp.elements.remove(color_ramp.elements[-1])
+
+            # Set first two elements
+            color_ramp.elements[0].position = config["colors"][0][0]
+            color_ramp.elements[0].color = config["colors"][0][1]
+            color_ramp.elements[1].position = config["colors"][1][0]
+            color_ramp.elements[1].color = config["colors"][1][1]
+
+            # Add additional elements
+            for position, color in config["colors"][2:]:
+                element = color_ramp.elements.new(position)
+                element.color = color
+
+            # Force update
+            bpy.context.view_layer.update()
 
         @staticmethod
         def extract_terrain_tensor(plane) -> Optional[torch.Tensor]:
@@ -447,6 +544,247 @@ class BlenderColorRampEnvironment:
             except Exception as e:
                 print(f"Error extracting terrain tensor: {e}")
                 return None
+
+        @staticmethod
+        def extract_color_data(plane) -> Optional[dict]:
+            """
+            Extract both height and color data from Blender geometry.
+
+            Args:
+                plane: Blender plane object with geometry nodes applied
+
+            Returns:
+                Dictionary with height map, color map, and metadata
+            """
+            try:
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                plane_eval = plane.evaluated_get(depsgraph)
+                mesh = plane_eval.to_mesh()
+
+                # Extract vertex positions
+                verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
+                grid_size = int(np.sqrt(len(verts)))
+
+                # Height map (Z coordinates)
+                heights = verts[:, 2].reshape(grid_size, grid_size)
+
+                # Color data - check if vertex colors exist
+                color_data = None
+                if mesh.vertex_colors:
+                    print(f"Found {len(mesh.vertex_colors)} vertex color layers")
+                    color_layer = mesh.vertex_colors.active
+                    if color_layer:
+                        # Extract color values
+                        colors = []
+                        for poly in mesh.polygons:
+                            for loop_idx in poly.loop_indices:
+                                color = color_layer.data[loop_idx].color
+                                colors.append(
+                                    [color[0], color[1], color[2], color[3]]
+                                )  # RGBA
+
+                        colors = np.array(colors)
+                        # Reshape to match grid if possible
+                        if len(colors) == grid_size * grid_size:
+                            color_data = colors.reshape(grid_size, grid_size, 4)
+                        else:
+                            color_data = colors
+
+                # Clean up
+                plane_eval.to_mesh_clear()
+
+                return {
+                    "heights": heights,
+                    "colors": color_data,
+                    "grid_size": grid_size,
+                    "num_vertices": len(verts),
+                    "has_colors": color_data is not None,
+                    "color_layers": len(mesh.vertex_colors)
+                    if mesh.vertex_colors
+                    else 0,
+                }
+
+            except Exception as e:
+                print(f"Error extracting color data: {e}")
+                return None
+
+        @staticmethod
+        def sample_noise_and_colors(
+            noise_node, color_ramp_node, sample_size: int = 64
+        ) -> Optional[dict]:
+            """
+            Sample the noise texture and color ramp directly from nodes.
+
+            Args:
+                noise_node: Blender noise texture node
+                color_ramp_node: Blender color ramp node
+                sample_size: Size of the sample grid
+
+            Returns:
+                Dictionary with sampled noise and color data
+            """
+            try:
+                # Create sample grid
+                x = np.linspace(-1, 1, sample_size)
+                y = np.linspace(-1, 1, sample_size)
+                X, Y = np.meshgrid(x, y)
+
+                # Sample noise values
+                noise_values = np.zeros((sample_size, sample_size))
+                color_values = np.zeros((sample_size, sample_size, 4))  # RGBA
+
+                # Get noise scale from node
+                noise_scale = noise_node.inputs["Scale"].default_value
+
+                # Sample each point
+                for i in range(sample_size):
+                    for j in range(sample_size):
+                        # Calculate noise value (simplified - Blender's actual noise is more complex)
+                        # This is a rough approximation
+                        noise_val = (
+                            np.sin(X[i, j] * noise_scale)
+                            + np.cos(Y[i, j] * noise_scale)
+                        ) * 0.5 + 0.5
+                        noise_val = np.clip(noise_val, 0, 1)
+                        noise_values[i, j] = noise_val
+
+                        # Sample color ramp at this noise value
+                        color = BlenderColorRampEnvironment.BlenderUtilities.sample_color_ramp(
+                            color_ramp_node, noise_val
+                        )
+                        color_values[i, j] = color
+
+                return {
+                    "noise_values": noise_values,
+                    "color_values": color_values,
+                    "sample_size": sample_size,
+                    "noise_scale": noise_scale,
+                    "sample_range": (-1, 1),
+                }
+
+            except Exception as e:
+                print(f"Error sampling noise and colors: {e}")
+                return None
+
+        @staticmethod
+        def sample_color_ramp(color_ramp_node, input_value: float) -> np.ndarray:
+            """
+            Sample a color from the color ramp at a given input value.
+
+            Args:
+                color_ramp_node: Blender color ramp node
+                input_value: Value to sample (0.0 to 1.0)
+
+            Returns:
+                RGBA color array
+            """
+            try:
+                color_ramp = color_ramp_node.color_ramp
+                elements = color_ramp.elements
+
+                # Clamp input value
+                input_value = np.clip(input_value, 0.0, 1.0)
+
+                # Find surrounding color stops
+                if len(elements) == 0:
+                    return np.array([0.0, 0.0, 0.0, 1.0])  # Default black
+
+                if len(elements) == 1:
+                    return np.array(elements[0].color[:])
+
+                # Find the two color stops to interpolate between
+                left_elem = elements[0]
+                right_elem = elements[-1]
+
+                for i in range(len(elements) - 1):
+                    if elements[i].position <= input_value <= elements[i + 1].position:
+                        left_elem = elements[i]
+                        right_elem = elements[i + 1]
+                        break
+
+                # Interpolate between the two colors
+                if left_elem.position == right_elem.position:
+                    return np.array(left_elem.color[:])
+
+                t = (input_value - left_elem.position) / (
+                    right_elem.position - left_elem.position
+                )
+
+                left_color = np.array(left_elem.color[:])
+                right_color = np.array(right_elem.color[:])
+
+                interpolated_color = (1 - t) * left_color + t * right_color
+
+                return interpolated_color
+
+            except Exception as e:
+                print(f"Error sampling color ramp: {e}")
+                return np.array([0.0, 0.0, 0.0, 1.0])
+
+        @staticmethod
+        def get_node_configuration_info(created_nodes: dict) -> dict:
+            """
+            Get detailed information about the node configuration.
+
+            Args:
+                created_nodes: Dictionary of created Blender nodes
+
+            Returns:
+                Dictionary with node configuration details
+            """
+            try:
+                info = {
+                    "nodes": {},
+                    "noise_scale": None,
+                    "color_ramp_stops": [],
+                    "total_nodes": len(created_nodes),
+                }
+
+                for name, node in created_nodes.items():
+                    node_info = {
+                        "type": node.bl_idname,
+                        "name": node.name,
+                        "inputs": {},
+                        "outputs": {},
+                    }
+
+                    # Get input values
+                    for input_socket in node.inputs:
+                        if hasattr(input_socket, "default_value"):
+                            try:
+                                node_info["inputs"][input_socket.name] = (
+                                    input_socket.default_value
+                                )
+                            except:
+                                node_info["inputs"][input_socket.name] = "N/A"
+
+                    # Get output info
+                    for output_socket in node.outputs:
+                        node_info["outputs"][output_socket.name] = output_socket.type
+
+                    info["nodes"][name] = node_info
+
+                    # Special handling for specific node types
+                    if name == "noise" and hasattr(
+                        node.inputs["Scale"], "default_value"
+                    ):
+                        info["noise_scale"] = node.inputs["Scale"].default_value
+
+                    if name == "ramp" and hasattr(node, "color_ramp"):
+                        for i, element in enumerate(node.color_ramp.elements):
+                            info["color_ramp_stops"].append(
+                                {
+                                    "position": element.position,
+                                    "color": list(element.color[:]),
+                                    "index": i,
+                                }
+                            )
+
+                return info
+
+            except Exception as e:
+                print(f"Error getting node configuration info: {e}")
+                return {}
 
         @staticmethod
         def translate_state_to_blender(
@@ -686,11 +1024,12 @@ class BlenderColorRampEnvironment:
 
     def get_reward(self, state: "ColorRampState") -> float:
         """
-        Get reward for terminal state.
+        Get reward for terminal state using BlenderUtilities.
 
         Example:
             >>> env = BlenderColorRampEnvironment()
-            >>> env.connect_blender(plane, modifier, nodes)
+            >>> plane, nodes = env.BlenderUtilities.create_color_ramp_procedure()
+            >>> env.connect_blender(plane, None, nodes)
             >>> terminal_state = ColorRampState(scale=5.0, colors={0: 1, 1: 2})
             >>> reward = env.get_reward(terminal_state)
             >>> print(reward)  # 1.0 if no holes, 0.0 if holes
@@ -700,73 +1039,62 @@ class BlenderColorRampEnvironment:
 
         try:
             # ====================================================
-            # Apply state to Blender
+            # Convert state to config format
+            # ====================================================
+            config = {
+                "noise_scale": state.scale if state.scale else 2.0,
+                "noise_detail": 2.0,  # Default value
+                "noise_roughness": 0.5,  # Default value
+                "colors": [],
+            }
+
+            # Convert state colors to config format
+            if not state.colors:
+                # Default black to white
+                config["colors"] = [(0.0, (0, 0, 0, 1)), (1.0, (1, 1, 1, 1))]
+            else:
+                # Convert state colors to config format
+                for position_idx in sorted(state.colors.keys()):
+                    color_id = state.colors[position_idx]
+                    normalized_pos = self.ColorUtilities.calculate_position(
+                        position_idx, self.max_colors
+                    )
+                    rgba_tuple = self.ColorUtilities.color_id_to_rgba_tuple(color_id)
+                    config["colors"].append((normalized_pos, rgba_tuple))
+
+            # ====================================================
+            # Update procedure parameters
             # ====================================================
             if not self.created_nodes:
-                return 0.0
+                raise ValueError("Blender nodes not connected")
 
-            # Apply noise scale
-            if state.scale is not None and "noise" in self.created_nodes:
-                noise_node = self.created_nodes["noise"]
-                noise_node.inputs["Scale"].default_value = state.scale
-
-            # Apply color ramp
-            if "ramp" in self.created_nodes:
-                ramp_node = self.created_nodes["ramp"]
-                color_ramp = ramp_node.color_ramp
-
-                # Clear existing points
-                while len(color_ramp.elements) > 0:
-                    color_ramp.elements.remove(color_ramp.elements[0])
-
-                # Add color points
-                if not state.colors:
-                    # Default black to white gradient
-                    elem0 = color_ramp.elements.new(0.0)
-                    elem0.color = self.ColorUtilities.BASIC_COLORS[ColorID.BLACK]
-                    elem1 = color_ramp.elements.new(1.0)
-                    elem1.color = self.ColorUtilities.BASIC_COLORS[ColorID.WHITE]
-                else:
-                    # Add colors at their calculated positions
-                    for position_idx in sorted(state.colors.keys()):
-                        color_id = state.colors[position_idx]
-
-                        # Calculate normalized position using utility
-                        normalized_pos = self.ColorUtilities.calculate_position(
-                            position_idx, self.max_colors
-                        )
-
-                        # Get RGBA color using utility
-                        rgba_color = self.ColorUtilities.color_id_to_rgba(color_id)
-
-                        # Create color ramp element
-                        elem = color_ramp.elements.new(normalized_pos)
-                        elem.color = rgba_color  # RGBA named tuple works directly
-
-                        # Debug print
-                        color_name = self.ColorUtilities.get_color_name(color_id)
-                        print(
-                            f"  Added {color_name} at {normalized_pos:.1%} - {rgba_color}"
-                        )
-
-            # Force Blender update
-            bpy.context.view_layer.update()
+            self.BlenderUtilities.update_procedure_parameters(
+                self.created_nodes, config
+            )
 
             # ====================================================
-            # Extract noise tensor from Blender
+            # Extract terrain tensor
             # ====================================================
             if not self.plane:
-                raise ValueError("Blender not connected")
+                raise ValueError("Blender plane not connected")
 
             tensor = self.BlenderUtilities.extract_terrain_tensor(self.plane)
             if tensor is None:
                 return 0.0
 
             # ====================================================
-            # REWARD LOGIC: Use nested RewardUtilities class
+            # REWARD LOGIC: Hole detection
             # ====================================================
             threshold = 0.5
-            return self.RewardUtilities.compute_reward(tensor, threshold)
+
+            # Use RewardUtilities for hole detection
+            has_holes = self.RewardUtilities.detect_holes(tensor, threshold)
+
+            # ====================================================
+            #  Return Final reward
+            # ====================================================
+
+            return 0.0 if has_holes else 1.0
 
         except Exception as e:
             print(f"Error getting reward: {e}")
