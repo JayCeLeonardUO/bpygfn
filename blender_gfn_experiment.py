@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 import bpy
 import matplotlib.pyplot as plt
@@ -239,6 +239,19 @@ class ColorUtilities:
 
 
 @dataclass
+class ColorRampConfig:
+    """Configuration for ColorRamp environment"""
+
+    available_scales: List[float] = None
+    max_colors: int = 5
+    num_color_choices: int = 32
+
+    def __post_init__(self):
+        if self.available_scales is None:
+            self.available_scales = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0]
+
+
+@dataclass
 class ColorRampState:
     """Represents a state in the color ramp construction process"""
 
@@ -310,6 +323,162 @@ class ColorRampEnvironmentConfig:
                 available_scales=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0],
                 max_colors=8,
                 num_color_choices=64,
+            )
+
+
+@dataclass
+class ColorRampEnvironmentConfig:
+    """Configuration for ColorRamp environment"""
+
+    available_scales: List[float] = None
+    max_colors: int = 5
+    num_color_choices: int = 32
+
+    def __post_init__(self):
+        if self.available_scales is None:
+            self.available_scales = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0]
+
+    # ====================================================
+    # ACTION ENCODING LOGIC
+    # ====================================================
+
+    def get_total_actions(self) -> int:
+        """Get total number of possible actions"""
+        # Scale actions + Color placement actions
+        return len(self.available_scales) + (self.max_colors * self.num_color_choices)
+
+    def encode_scale_action(self, scale_idx: int) -> int:
+        """
+        Encode scale selection action
+
+        Args:
+            scale_idx: Index in available_scales
+        Returns:
+            Action integer
+        """
+        if 0 <= scale_idx < len(self.available_scales):
+            return scale_idx
+        raise ValueError(f"Invalid scale index {scale_idx}")
+
+    def encode_color_action(self, position: int, color_id: int) -> int:
+        """
+        Encode color placement action
+
+        Args:
+            position: Position index (0 to max_colors-1)
+            color_id: Color ID (0 to num_color_choices-1)
+        Returns:
+            Action integer
+        """
+        if not (0 <= position < self.max_colors):
+            raise ValueError(f"Invalid position {position}")
+        if not (0 <= color_id < self.num_color_choices):
+            raise ValueError(f"Invalid color_id {color_id}")
+
+        scale_offset = len(self.available_scales)
+        return scale_offset + position * self.num_color_choices + color_id
+
+    def decode_action(self, action: int) -> dict:
+        """
+        Decode action integer back to action type and parameters
+
+        Args:
+            action: Action integer
+        Returns:
+            Dictionary with action info
+        """
+        if action < 0 or action >= self.get_total_actions():
+            raise ValueError(f"Invalid action {action}")
+
+        scale_actions = len(self.available_scales)
+
+        if action < scale_actions:
+            # Scale action
+            return {
+                "type": "scale",
+                "scale_idx": action,
+                "scale_value": self.available_scales[action],
+            }
+        else:
+            # Color action
+            color_action = action - scale_actions
+            position = color_action // self.num_color_choices
+            color_id = color_action % self.num_color_choices
+
+            return {"type": "color", "position": position, "color_id": color_id}
+
+    def get_valid_actions(self, state) -> List[int]:
+        """
+        Get valid actions for a given state
+
+        Args:
+            state: ColorRampState object
+        Returns:
+            List of valid action integers
+        """
+        valid_actions = []
+
+        if state.scale is None:
+            # Must choose scale first
+            for i in range(len(self.available_scales)):
+                valid_actions.append(self.encode_scale_action(i))
+        else:
+            # Can place colors at unoccupied positions
+            occupied_positions = set(state.colors.keys())
+            available_positions = [
+                i for i in range(self.max_colors) if i not in occupied_positions
+            ]
+
+            for pos in available_positions:
+                for color_id in range(self.num_color_choices):
+                    valid_actions.append(self.encode_color_action(pos, color_id))
+
+        return valid_actions
+
+    def action_to_string(self, action: int) -> str:
+        """Convert action to human-readable string"""
+        action_info = self.decode_action(action)
+
+        if action_info["type"] == "scale":
+            return f"Scale[{action_info['scale_idx']}] = {action_info['scale_value']}"
+        else:
+            return f"Color[pos={action_info['position']}, id={action_info['color_id']}]"
+
+    # ====================================================
+    # FACTORY CONFIGS
+    # ====================================================
+
+    class DefaultConfigs:
+        """Factory for common ColorRamp configurations"""
+
+        @staticmethod
+        def default():
+            """Default configuration"""
+            return ColorRampEnvironmentConfig()
+
+        @staticmethod
+        def small():
+            """Small configuration for testing"""
+            return ColorRampEnvironmentConfig(
+                available_scales=[0.5, 1.0, 2.0], max_colors=3, num_color_choices=8
+            )
+
+        @staticmethod
+        def large():
+            """Large configuration for complex experiments"""
+            return ColorRampEnvironmentConfig(
+                available_scales=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0],
+                max_colors=8,
+                num_color_choices=64,
+            )
+
+        @staticmethod
+        def notebook_test():
+            """Configuration for notebook testing"""
+            return ColorRampEnvironmentConfig(
+                available_scales=[0.5, 1.0, 2.0, 5.0, 10.0],
+                max_colors=5,
+                num_color_choices=32,
             )
 
 
@@ -662,9 +831,78 @@ def create_blender_procedure(config: BlenderProcedureConfig):
     BlenderProcedureBuilder.create_procedure(config, clear_existing)
 
 
-def create_blender_procedure_dont_clear(config: BlenderProcedureConfig):
-    clear_existing: bool = False
-    BlenderProcedureBuilder.create_procedure(config, clear_existing)
+# ====================================================
+# Blender Environment to Tensor
+# ====================================================
+
+
+class BlenderTensorUtility:
+    """Utility class for extracting tensor data from Blender objects"""
+
+    @staticmethod
+    def extract_terrain_tensor(plane: bpy.types.Object) -> Optional[torch.Tensor]:
+        """
+        Extract terrain height data from Blender plane
+
+        Args:
+            plane: Blender mesh object (plane with geometry nodes applied)
+
+        Returns:
+            2D tensor of height values, or None if extraction fails
+        """
+        try:
+            # Force scene update
+            bpy.context.view_layer.update()
+            depsgraph: bpy.types.Depsgraph = bpy.context.evaluated_depsgraph_get()
+            depsgraph.update()
+
+            # Get evaluated mesh
+            plane_eval: bpy.types.Object = plane.evaluated_get(depsgraph)
+            mesh: bpy.types.Mesh = plane_eval.to_mesh(
+                preserve_all_data_layers=True, depsgraph=depsgraph
+            )
+
+            if len(mesh.vertices) == 0:
+                plane_eval.to_mesh_clear()
+                return None
+
+            # Extract vertices
+            verts: list[tuple[float, float, float]] = [
+                (v.co.x, v.co.y, v.co.z) for v in mesh.vertices
+            ]
+            grid_size: int = int(len(verts) ** 0.5)
+            heights: list[float] = [v[2] for v in verts]
+
+            # Clean up
+            plane_eval.to_mesh_clear()
+
+            # Reshape to grid
+            heights_array: np.ndarray = np.array(heights).reshape(grid_size, grid_size)
+            terrain_tensor: torch.Tensor = torch.from_numpy(heights_array).float()
+
+            return terrain_tensor
+
+        except Exception as e:
+            print(f"❌ Error extracting terrain: {e}")
+            return None
+
+
+# ====================================================
+# Convenience function with type hints
+# ====================================================
+
+
+def extract_terrain_tensor(plane: bpy.types.Object) -> Optional[torch.Tensor]:
+    """
+    Extract terrain height data from Blender plane
+
+    Args:
+        plane: Blender mesh object (plane with geometry nodes applied)
+
+    Returns:
+        2D tensor of height values, or None if extraction fails
+    """
+    return BlenderTensorUtility.extract_terrain_tensor(plane)
 
 
 # ====================================================
@@ -698,1082 +936,23 @@ class BlenderFileSaverUtility:
             return None
 
 
-# Simple function for Jupyter
+# ====================================================
+# Save File Funtion
+# ====================================================
+
+
 def save_blend(name="experiment"):
     """Quick save function"""
     return BlenderFileSaverUtility.save_now(name)
 
 
-# ====================================================
-# Blender Experiment Environment
-# ====================================================
-
-
-class BlenderUtilities:
-    """
-    Nested utility class for Blender operations within the environment.
-    """
-
-    @staticmethod
-    def create_color_ramp_procedure():
-        """Create the color ramp geometry node procedure"""
-
-        # Clear scene
-        bpy.ops.object.select_all(action="SELECT")
-        bpy.ops.object.delete()
-
-        for ng in bpy.data.node_groups:
-            bpy.data.node_groups.remove(ng)
-
-        # Create node group
-        node_group = bpy.data.node_groups.new("ColorRampGroup", "GeometryNodeTree")
-
-        # Add nodes
-        group_input = node_group.nodes.new("NodeGroupInput")
-        group_output = node_group.nodes.new("NodeGroupOutput")
-        noise = node_group.nodes.new("ShaderNodeTexNoise")
-        combine = node_group.nodes.new("ShaderNodeCombineXYZ")
-        ramp = node_group.nodes.new("ShaderNodeValToRGB")
-        set_pos = node_group.nodes.new("GeometryNodeSetPosition")
-
-        # Set up interface
-        node_group.interface.new_socket(
-            "Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
-        )
-        node_group.interface.new_socket(
-            "Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
-        )
-
-        # Connect nodes
-        node_group.links.new(noise.outputs["Fac"], combine.inputs["X"])
-        node_group.links.new(noise.outputs["Fac"], combine.inputs["Y"])
-        node_group.links.new(noise.outputs["Fac"], combine.inputs["Z"])
-        node_group.links.new(combine.outputs["Vector"], ramp.inputs["Fac"])
-        node_group.links.new(ramp.outputs["Color"], set_pos.inputs["Offset"])
-        node_group.links.new(group_input.outputs[0], set_pos.inputs["Geometry"])
-        node_group.links.new(set_pos.outputs["Geometry"], group_output.inputs[0])
-
-        # Create plane
-        bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, 0))
-        plane = bpy.context.active_object
-
-        # Add subdivisions
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.subdivide(number_cuts=15)
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-        # Add geometry nodes modifier
-        geo_mod = plane.modifiers.new("GeometryNodes", "NODES")
-        geo_mod.node_group = node_group
-
-        return plane, {"noise": noise, "ramp": ramp}
-
-    # ====================================================
-    # Upadate Blender state with Color Ramp state Data
-    # ====================================================
-    @staticmethod
-    def update_blender_from_state(state, nodes):
-        """
-        Update Blender scene from ColorRampState
-
-        Args:
-            state: ColorRampState object
-            nodes: nodes dict with 'noise' and 'ramp' keys
-        """
-        # Update noise scale
-        nodes["noise"].inputs["Scale"].default_value = state.scale
-
-        # Update color ramp
-        color_ramp = nodes["ramp"].color_ramp
-
-        while len(color_ramp.elements) > len(state.colors):
-            color_ramp.elements.remove(color_ramp.elements[-1])
-        while len(color_ramp.elements) < len(state.colors):
-            color_ramp.elements.new(0.5)
-
-        for i, (pos_idx, color_id) in enumerate(sorted(state.colors.items())):
-            position = ColorUtilities.calculate_position(pos_idx, 5)
-            rgba = ColorUtilities.color_id_to_rgba_tuple(color_id)
-            color_ramp.elements[i].position = position
-            color_ramp.elements[i].color = rgba
-
-        # Force update
-        bpy.context.view_layer.update()
-        bpy.context.evaluated_depsgraph_get().update()
-
-    @staticmethod
-    def get_plane_from_scene(plane_name="Plane"):
-        """
-        Get the plane object from the current Blender scene.
-
-        Args:
-            plane_name: Name of the plane object to find
-
-        Returns:
-            Plane object or None if not found
-        """
-        try:
-            # Try to get plane by name
-            if plane_name in bpy.data.objects:
-                return bpy.data.objects[plane_name]
-
-            # If not found by name, look for any mesh object with geometry nodes
-            for obj in bpy.data.objects:
-                if obj.type == "MESH" and obj.modifiers:
-                    for modifier in obj.modifiers:
-                        if modifier.type == "NODES":
-                            return obj
-
-            # If still not found, get active object if it's a mesh
-            if bpy.context.active_object and bpy.context.active_object.type == "MESH":
-                return bpy.context.active_object
-
-            return None
-
-        except Exception as e:
-            print(f"Error getting plane from scene: {e}")
-            return None
-
-    # ====================================================
-    # Reward Helper for getting height map
-    # ====================================================
-
-    @staticmethod
-    def extract_terrain_tensor(plane) -> Optional[torch.Tensor]:
-        """
-        Extract terrain height data from Blender plane as tensor.
-
-        Args:
-            plane: Blender plane object with geometry nodes
-        Returns:
-            2D tensor of height values with geometry nodes applied, or None if extraction fails
-        """
-        try:
-            # CRITICAL FIX 1: Force scene update to ensure geometry nodes are evaluated
-            bpy.context.view_layer.update()
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            depsgraph.update()
-
-            # CRITICAL FIX 2: Get evaluated object with all modifiers applied
-            plane_eval = plane.evaluated_get(depsgraph)
-
-            # CRITICAL FIX 3: Use proper parameters to ensure geometry nodes are included
-            mesh = plane_eval.to_mesh(
-                preserve_all_data_layers=True, depsgraph=depsgraph
-            )
-
-            # Check if we actually got vertices
-            if len(mesh.vertices) == 0:
-                print("Error: No vertices in evaluated mesh")
-                plane_eval.to_mesh_clear()
-                return None
-
-            # Extract vertex heights
-            verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
-
-            # CRITICAL FIX 4: Verify geometry nodes are actually working
-            z_variation = verts[:, 2].std()
-            if z_variation < 1e-6:
-                print(
-                    f"Warning: Terrain appears flat (std={z_variation:.8f}) - geometry nodes may not be applied"
-                )
-                # Don't return None, continue - might still be useful for debugging
-
-            # Calculate grid size
-            grid_size = int(np.sqrt(len(verts)))
-
-            # CRITICAL FIX 5: Better handling of non-perfect squares
-            expected_verts = grid_size * grid_size
-            if expected_verts != len(verts):
-                print(
-                    f"Warning: {len(verts)} vertices don't form perfect {grid_size}x{grid_size} grid"
-                )
-                # Use available vertices up to perfect square
-                verts = verts[:expected_verts]
-
-            # Extract heights and reshape
-            heights = verts[:, 2].reshape(grid_size, grid_size)
-            tensor = torch.from_numpy(heights).float()
-
-            # Clean up Blender mesh
-            plane_eval.to_mesh_clear()
-
-            return tensor
-
-        except Exception as e:
-            print(f"Error extracting terrain tensor: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return None
-
-    @staticmethod
-    def extract_color_data(plane) -> Optional[dict]:
-        """
-        Extract both height and color data from Blender geometry.
-        FIXED VERSION - Proper mesh lifecycle and geometry nodes application.
-
-        Args:
-            plane: Blender plane object with geometry nodes applied
-        Returns:
-            Dictionary with height map, color map, and metadata
-        """
-        try:
-            # CRITICAL FIX 1: Force scene update first
-            bpy.context.view_layer.update()
-
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            depsgraph.update()
-
-            plane_eval = plane.evaluated_get(depsgraph)
-
-            # CRITICAL FIX 2: Use proper parameters to ensure geometry nodes are applied
-            mesh = plane_eval.to_mesh(
-                preserve_all_data_layers=True, depsgraph=depsgraph
-            )
-
-            # CRITICAL FIX 3: Extract ALL data immediately before mesh becomes invalid
-            # Extract vertex positions immediately
-            verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
-            grid_size = int(np.sqrt(len(verts)))
-
-            # Height map (Z coordinates)
-            heights = verts[:, 2].reshape(grid_size, grid_size)
-
-            # Color data - extract immediately if available
-            color_data = None
-            color_layers_count = 0
-
-            if hasattr(mesh, "vertex_colors") and mesh.vertex_colors:
-                color_layers_count = len(mesh.vertex_colors)
-                print(f"Found {color_layers_count} vertex color layers")
-
-                color_layer = mesh.vertex_colors.active
-                if color_layer and hasattr(color_layer, "data"):
-                    # Extract ALL color data immediately
-                    colors = []
-                    for poly in mesh.polygons:
-                        for loop_idx in poly.loop_indices:
-                            if loop_idx < len(color_layer.data):
-                                color = color_layer.data[loop_idx].color
-                                colors.append(
-                                    [color[0], color[1], color[2], color[3]]
-                                )  # RGBA
-
-                    if colors:
-                        colors = np.array(colors)
-                        # Reshape to match grid if possible
-                        if len(colors) == grid_size * grid_size:
-                            color_data = colors.reshape(grid_size, grid_size, 4)
-                        else:
-                            color_data = colors
-
-            # CRITICAL FIX 4: Only cleanup AFTER all data is extracted
-            plane_eval.to_mesh_clear()
-
-            return {
-                "heights": heights,
-                "colors": color_data,
-                "grid_size": grid_size,
-                "num_vertices": len(verts),
-                "has_colors": color_data is not None,
-                "color_layers": color_layers_count,
-            }
-
-        except Exception as e:
-            print(f"Error extracting color data: {e}")
-            # Ensure cleanup happens even on error
-            try:
-                if "plane_eval" in locals():
-                    plane_eval.to_mesh_clear()
-            except:
-                pass
-            return None
-
-    @staticmethod
-    def sample_noise_and_colors(
-        noise_node, color_ramp_node, sample_size: int = 64
-    ) -> Optional[dict]:
-        """
-        Sample the noise texture and color ramp directly from nodes.
-
-        Args:
-            noise_node: Blender noise texture node
-            color_ramp_node: Blender color ramp node
-            sample_size: Size of the sample grid
-
-        Returns:
-            Dictionary with sampled noise and color data
-        """
-        try:
-            # Create sample grid
-            x = np.linspace(-1, 1, sample_size)
-            y = np.linspace(-1, 1, sample_size)
-            X, Y = np.meshgrid(x, y)
-
-            # Sample noise values
-            noise_values = np.zeros((sample_size, sample_size))
-            color_values = np.zeros((sample_size, sample_size, 4))  # RGBA
-
-            # Get noise scale from node
-            noise_scale = noise_node.inputs["Scale"].default_value
-
-            # Sample each point
-            for i in range(sample_size):
-                for j in range(sample_size):
-                    # Calculate noise value (simplified - Blender's actual noise is more complex)
-                    # This is a rough approximation
-                    noise_val = (
-                        np.sin(X[i, j] * noise_scale) + np.cos(Y[i, j] * noise_scale)
-                    ) * 0.5 + 0.5
-                    noise_val = np.clip(noise_val, 0, 1)
-                    noise_values[i, j] = noise_val
-
-                    # Sample color ramp at this noise value
-                    color = (
-                        BlenderColorRampEnvironment.BlenderUtilities.sample_color_ramp(
-                            color_ramp_node, noise_val
-                        )
-                    )
-                    color_values[i, j] = color
-
-            return {
-                "noise_values": noise_values,
-                "color_values": color_values,
-                "sample_size": sample_size,
-                "noise_scale": noise_scale,
-                "sample_range": (-1, 1),
-            }
-
-        except Exception as e:
-            print(f"Error sampling noise and colors: {e}")
-            return None
-
-    @staticmethod
-    def sample_color_ramp(color_ramp_node, input_value: float) -> np.ndarray:
-        """
-        Sample a color from the color ramp at a given input value.
-
-        Args:
-            color_ramp_node: Blender color ramp node
-            input_value: Value to sample (0.0 to 1.0)
-
-        Returns:
-            RGBA color array
-        """
-        try:
-            color_ramp = color_ramp_node.color_ramp
-            elements = color_ramp.elements
-
-            # Clamp input value
-            input_value = np.clip(input_value, 0.0, 1.0)
-
-            # Find surrounding color stops
-            if len(elements) == 0:
-                return np.array([0.0, 0.0, 0.0, 1.0])  # Default black
-
-            if len(elements) == 1:
-                return np.array(elements[0].color[:])
-
-            # Find the two color stops to interpolate between
-            left_elem = elements[0]
-            right_elem = elements[-1]
-
-            for i in range(len(elements) - 1):
-                if elements[i].position <= input_value <= elements[i + 1].position:
-                    left_elem = elements[i]
-                    right_elem = elements[i + 1]
-                    break
-
-            # Interpolate between the two colors
-            if left_elem.position == right_elem.position:
-                return np.array(left_elem.color[:])
-
-            t = (input_value - left_elem.position) / (
-                right_elem.position - left_elem.position
-            )
-
-            left_color = np.array(left_elem.color[:])
-            right_color = np.array(right_elem.color[:])
-
-            interpolated_color = (1 - t) * left_color + t * right_color
-
-            return interpolated_color
-
-        except Exception as e:
-            print(f"Error sampling color ramp: {e}")
-            return np.array([0.0, 0.0, 0.0, 1.0])
-
-    @staticmethod
-    def get_node_configuration_info(created_nodes: dict) -> dict:
-        """
-        Get detailed information about the node configuration.
-
-        Args:
-            created_nodes: Dictionary of created Blender nodes
-
-        Returns:
-            Dictionary with node configuration details
-        """
-        try:
-            info = {
-                "nodes": {},
-                "noise_scale": None,
-                "color_ramp_stops": [],
-                "total_nodes": len(created_nodes),
-            }
-
-            for name, node in created_nodes.items():
-                node_info = {
-                    "type": node.bl_idname,
-                    "name": node.name,
-                    "inputs": {},
-                    "outputs": {},
-                }
-
-                # Get input values
-                for input_socket in node.inputs:
-                    if hasattr(input_socket, "default_value"):
-                        try:
-                            node_info["inputs"][input_socket.name] = (
-                                input_socket.default_value
-                            )
-                        except:
-                            node_info["inputs"][input_socket.name] = "N/A"
-
-                # Get output info
-                for output_socket in node.outputs:
-                    node_info["outputs"][output_socket.name] = output_socket.type
-
-                info["nodes"][name] = node_info
-
-                # Special handling for specific node types
-                if name == "noise" and hasattr(node.inputs["Scale"], "default_value"):
-                    info["noise_scale"] = node.inputs["Scale"].default_value
-
-                if name == "ramp" and hasattr(node, "color_ramp"):
-                    for i, element in enumerate(node.color_ramp.elements):
-                        info["color_ramp_stops"].append(
-                            {
-                                "position": element.position,
-                                "color": list(element.color[:]),
-                                "index": i,
-                            }
-                        )
-
-            return info
-
-        except Exception as e:
-            print(f"Error getting node configuration info: {e}")
-            return {}
-
-    @staticmethod
-    def translate_state_to_blender(
-        state: "ColorRampState", created_nodes: dict, max_colors: int
-    ) -> bool:
-        """
-        Translate ColorRampState to Blender color ramp.
-        FIXED VERSION - Properly handles Blender ColorRamp element requirements.
-        Args:
-            state: ColorRampState to translate
-            created_nodes: Dictionary of Blender nodes
-            max_colors: Maximum number of colors
-        Returns:
-            True if successfully translated, False otherwise
-        """
-        try:
-            # Apply noise scale
-            if state.scale is not None and "noise" in created_nodes:
-                noise_node = created_nodes["noise"]
-                noise_node.inputs["Scale"].default_value = state.scale
-                print(f"  Applied noise scale: {state.scale}")
-
-            # Apply color ramp
-            if "ramp" in created_nodes:
-                ramp_node = created_nodes["ramp"]
-                color_ramp = ramp_node.color_ramp
-
-                # CRITICAL FIX: Handle color ramp elements properly
-                if not state.colors:
-                    # Default black to white gradient
-                    # FIXED: Don't remove all elements, reset to 2 elements
-                    while len(color_ramp.elements) > 2:
-                        color_ramp.elements.remove(color_ramp.elements[-1])
-
-                    # Ensure we have exactly 2 elements
-                    while len(color_ramp.elements) < 2:
-                        color_ramp.elements.new(1.0)
-
-                    # Set the two default elements
-                    color_ramp.elements[0].position = 0.0
-                    color_ramp.elements[0].color = (0.0, 0.0, 0.0, 1.0)  # Black
-                    color_ramp.elements[1].position = 1.0
-                    color_ramp.elements[1].color = (1.0, 1.0, 1.0, 1.0)  # White
-
-                    print("  Applied default black-to-white gradient")
-                else:
-                    # FIXED: Properly manage color ramp elements
-                    sorted_positions = sorted(state.colors.keys())
-                    needed_elements = len(sorted_positions)
-
-                    # Adjust number of elements to match what we need
-                    current_elements = len(color_ramp.elements)
-
-                    if current_elements > needed_elements:
-                        # Remove excess elements from the end
-                        while len(color_ramp.elements) > needed_elements:
-                            color_ramp.elements.remove(color_ramp.elements[-1])
-                    elif current_elements < needed_elements:
-                        # Add missing elements
-                        while len(color_ramp.elements) < needed_elements:
-                            # Add at a temporary position
-                            color_ramp.elements.new(0.5)
-
-                    # Now set the actual positions and colors
-                    for i, position_idx in enumerate(sorted_positions):
-                        if i < len(color_ramp.elements):
-                            color_id = state.colors[position_idx]
-
-                            # Calculate normalized position
-                            normalized_pos = (position_idx + 1) / max_colors
-
-                            # FIXED: Get RGBA color using proper method access
-                            # Define basic colors inline to avoid class reference issues
-                            if color_id == 0:  # BLACK
-                                rgba_tuple = (0.0, 0.0, 0.0, 1.0)
-                                color_name = "Black"
-                            elif color_id == 1:  # WHITE
-                                rgba_tuple = (1.0, 1.0, 1.0, 1.0)
-                                color_name = "White"
-                            elif color_id == 2:  # RED
-                                rgba_tuple = (1.0, 0.0, 0.0, 1.0)
-                                color_name = "Red"
-                            elif color_id == 3:  # GREEN
-                                rgba_tuple = (0.0, 1.0, 0.0, 1.0)
-                                color_name = "Green"
-                            elif color_id == 4:  # BLUE
-                                rgba_tuple = (0.0, 0.0, 1.0, 1.0)
-                                color_name = "Blue"
-                            elif color_id == 5:  # YELLOW
-                                rgba_tuple = (1.0, 1.0, 0.0, 1.0)
-                                color_name = "Yellow"
-                            elif color_id == 6:  # MAGENTA
-                                rgba_tuple = (1.0, 0.0, 1.0, 1.0)
-                                color_name = "Magenta"
-                            elif color_id == 7:  # CYAN
-                                rgba_tuple = (0.0, 1.0, 1.0, 1.0)
-                                color_name = "Cyan"
-                            else:  # Generated colors (8+)
-                                # Simple procedural color generation
-                                import colorsys
-
-                                hue_range = 32 - 8  # Colors 8+ are procedural
-                                hue = (
-                                    ((color_id - 8) / hue_range) * 360
-                                    if hue_range > 0
-                                    else 0
-                                )
-                                saturation = 0.8 if color_id % 2 == 0 else 1.0
-                                value = 0.9 if color_id % 3 == 0 else 0.7
-                                r, g, b = colorsys.hsv_to_rgb(
-                                    hue / 360, saturation, value
-                                )
-                                rgba_tuple = (r, g, b, 1.0)
-                                color_name = f"Generated-{color_id}"
-
-                            # Set element properties
-                            element = color_ramp.elements[i]
-                            element.position = normalized_pos
-                            element.color = rgba_tuple
-
-                            # Debug print
-                            print(
-                                f"  Added {color_name} at {normalized_pos:.1%} - {rgba_tuple}"
-                            )
-
-            # ENHANCED: Force more complete Blender update
-            bpy.context.view_layer.update()
-
-            # Force depsgraph update to ensure geometry nodes recalculate
-            dg = bpy.context.evaluated_depsgraph_get()
-            dg.update()
-
-            # Additional update for geometry nodes
-            for area in bpy.context.screen.areas:
-                if area.type == "VIEW_3D":
-                    area.tag_redraw()
-
-            return True
-
-        except Exception as e:
-            print(f"Error translating state to Blender: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return False
-
-
-class BlenderColorRampEnvironment:
-    """
-    Blender environment for color ramp generation - composition based.
-    Similar to your HyperGrid approach.
-    """
-
-    def extract_blender_data(self, state: "ColorRampState") -> Optional[dict]:
-        """
-        Extract comprehensive data from Blender after applying a state.
-
-        Args:
-            state: ColorRampState to apply and extract data from
-
-        Returns:
-            Dictionary with all extracted Blender data
-        """
-        if not self.is_terminal(state):
-            print("Warning: State is not terminal, data may be incomplete")
-
-        try:
-            # Apply state to Blender
-            success = self.BlenderUtilities.translate_state_to_blender(
-                state, self.created_nodes, self.max_colors
-            )
-            if not success:
-                return None
-
-            # Extract height data
-            height_tensor = self.BlenderUtilities.extract_terrain_tensor(self.plane)
-
-            # Extract color data
-            color_data = self.BlenderUtilities.extract_color_data(self.plane)
-
-            # Sample noise and colors directly from nodes
-            noise_color_data = None
-            if (
-                self.created_nodes
-                and "noise" in self.created_nodes
-                and "ramp" in self.created_nodes
-            ):
-                noise_color_data = self.BlenderUtilities.sample_noise_and_colors(
-                    self.created_nodes["noise"],
-                    self.created_nodes["ramp"],
-                    sample_size=64,
-                )
-
-            # Get node configuration info
-            node_info = self.BlenderUtilities.get_node_configuration_info(
-                self.created_nodes
-            )
-
-            # Calculate reward
-            reward = (
-                self.RewardUtilities.compute_reward(height_tensor)
-                if height_tensor is not None
-                else 0.0
-            )
-
-            return {
-                "state": state,
-                "height_tensor": height_tensor,
-                "color_data": color_data,
-                "noise_color_data": noise_color_data,
-                "node_info": node_info,
-                "reward": reward,
-                "terrain_analysis": self.RewardUtilities.detect_holes(height_tensor)
-                if height_tensor is not None
-                else None,
-                "blender_connected": self.plane is not None
-                and self.created_nodes is not None,
-            }
-
-        except Exception as e:
-            print(f"Error extracting Blender data: {e}")
-            return None
-        """
-        Nested utility class for Blender operations within the environment.
-        """
-
-    class RewardUtilities:
-        """
-        Nested utility class for reward calculations within the Blender environment.
-        """
-
-        @staticmethod
-        def detect_holes(
-            tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
-        ) -> bool:
-            """
-            Detect holes in terrain data using binary fill method.
-
-            Args:
-                tensor: 2D array/tensor of height values
-                threshold: Height threshold for binary mask creation
-
-            Returns:
-                True if holes are detected, False otherwise
-            """
-            # Convert to numpy if needed
-            if torch.is_tensor(tensor):
-                noise = tensor.numpy()
-            else:
-                noise = tensor
-
-            # Create binary mask
-            binary_mask = noise > threshold
-            filled = ndimage.binary_fill_holes(binary_mask)
-            has_holes = (filled.sum() - binary_mask.sum()) > 0
-
-            return has_holes
-
-        @staticmethod
-        def compute_reward(
-            tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
-        ) -> float:
-            """
-            Compute reward based on hole detection.
-
-            Args:
-                tensor: 2D array/tensor of height values
-                threshold: Height threshold for binary mask creation
-
-            Returns:
-                1.0 if no holes detected, 0.0 if holes detected
-            """
-
-            has_holes = BlenderColorRampEnvironment.RewardUtilities.detect_holes(
-                tensor, threshold
-            )
-
-            return 0.0 if has_holes else 1.0
-
-    def __init__(
-        self,
-        max_colors: int = 5,
-        num_color_choices: int = 32,
-        available_scales: List[float] = None,
-    ):
-        self.max_colors = max_colors
-        self.num_color_choices = num_color_choices
-
-        if available_scales is None:
-            self.available_scales = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0]
-        else:
-            self.available_scales = available_scales
-
-        # Blender connections (set externally)
-        self.plane = None
-        self.modifier = None
-        self.created_nodes = None
-
-        print(f"🎨 Blender ColorRamp Environment created")
-        print(f"  Max colors: {max_colors}")
-        print(f"  Color choices: {num_color_choices}")
-        print(f"  Available scales: {len(self.available_scales)}")
-
-    @property
-    def plane_tensor(self):
-        return self.BlenderUtilities.extract_terrain_tensor(self.plane)
-
-    def get_initial_state(self) -> "ColorRampState":
-        return ColorRampState(
-            max_colors=self.max_colors, num_color_choices=self.num_color_choices
-        )
-
-    def get_valid_actions(self, state: "ColorRampState") -> List[int]:
-        """
-        Get all valid actions from current state.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=2, num_color_choices=3)
-            >>> state = env.get_initial_state()
-            >>> actions = env.get_valid_actions(state)
-            >>> print(actions)  # [0, 1, 2, 3, 4, 5, 6] - scale choices
-        """
-        if state.scale is None:
-            return list(range(len(self.available_scales)))
-
-        occupied_positions = set(state.colors.keys())
-        available_positions = [
-            i for i in range(self.max_colors) if i not in occupied_positions
-        ]
-
-        if not available_positions:
-            return []
-
-        valid_actions = []
-        scale_offset = len(self.available_scales)
-
-        for pos in available_positions:
-            for color_id in range(self.num_color_choices):
-                action = scale_offset + pos * self.num_color_choices + color_id
-                valid_actions.append(action)
-
-        return valid_actions
-
-    def apply_action(self, state: "ColorRampState", action: int) -> "ColorRampState":
-        """
-        Apply action to state to get next state.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=2)
-            >>> state = env.get_initial_state()
-            >>> next_state = env.apply_action(state, action=2)  # Choose scale
-            >>> print(next_state.scale)  # 2.0 (or whatever scale index 2 is)
-        """
-        if action not in self.get_valid_actions(state):
-            raise ValueError(f"Invalid action {action} for state {state}")
-
-        next_state = state.copy()
-        next_state.step_count += 1
-
-        if state.scale is None:
-            if 0 <= action < len(self.available_scales):
-                next_state.scale = self.available_scales[action]
-            else:
-                raise ValueError(f"Invalid scale action {action}")
-        else:
-            scale_offset = len(self.available_scales)
-            color_action = action - scale_offset
-
-            position_idx = color_action // self.num_color_choices
-            color_id = color_action % self.num_color_choices
-
-            if position_idx in state.colors:
-                raise ValueError(f"Position {position_idx} already occupied")
-
-            next_state.colors[position_idx] = color_id
-
-        return next_state
-
-    def is_terminal(self, state: "ColorRampState") -> bool:
-        """
-        Check if state is terminal.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=2)
-            >>> state = ColorRampState(scale=5.0, colors={0: 1, 1: 2})
-            >>> print(env.is_terminal(state))  # True
-        """
-        return state.is_terminal(self.max_colors)
-
-    def get_reward(self, state: "ColorRampState") -> float:
-        """
-        Get reward for terminal state using BlenderUtilities.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment()
-            >>> plane, nodes = env.BlenderUtilities.create_color_ramp_procedure()
-            >>> env.connect_blender(plane, None, nodes)
-            >>> terminal_state = ColorRampState(scale=5.0, colors={0: 1, 1: 2})
-            >>> reward = env.get_reward(terminal_state)
-            >>> print(reward)  # 1.0 if no holes, 0.0 if holes
-        """
-        if not self.is_terminal(state):
-            return 0.0
-
-        try:
-            # ====================================================
-            # Convert state to config format
-            # ====================================================
-            config = {
-                "noise_scale": state.scale if state.scale else 2.0,
-                "noise_detail": 2.0,  # Default value
-                "noise_roughness": 0.5,  # Default value
-                "colors": [],
-            }
-
-            # Convert state colors to config format
-            if not state.colors:
-                # Default black to white
-                config["colors"] = [(0.0, (0, 0, 0, 1)), (1.0, (1, 1, 1, 1))]
-            else:
-                # Convert state colors to config format
-                for position_idx in sorted(state.colors.keys()):
-                    color_id = state.colors[position_idx]
-                    normalized_pos = self.ColorUtilities.calculate_position(
-                        position_idx, self.max_colors
-                    )
-                    rgba_tuple = self.ColorUtilities.color_id_to_rgba_tuple(color_id)
-                    config["colors"].append((normalized_pos, rgba_tuple))
-
-            # ====================================================
-            # Update procedure parameters
-            # ====================================================
-            if not self.created_nodes:
-                raise ValueError("Blender nodes not connected")
-
-            self.BlenderUtilities.update_procedure_parameters(
-                self.created_nodes, config
-            )
-
-            # ====================================================
-            # Extract terrain tensor
-            # ====================================================
-            if not self.plane:
-                raise ValueError("Blender plane not connected")
-
-            tensor = self.BlenderUtilities.extract_terrain_tensor(self.plane)
-            if tensor is None:
-                return 0.0
-
-            # ====================================================
-            # REWARD LOGIC: Hole detection
-            # ====================================================
-            threshold = 0.5
-
-            # Use RewardUtilities for hole detection
-            has_holes = self.RewardUtilities.detect_holes(tensor, threshold)
-
-            # ====================================================
-            #  Return Final reward
-            # ====================================================
-
-            return 0.0 if has_holes else 1.0
-
-        except Exception as e:
-            print(f"Error getting reward: {e}")
-            return 0.0
-
-    def connect_blender(self, plane, modifier, created_nodes):
-        """
-        Connect to Blender objects.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment()
-            >>> env.connect_blender(plane, modifier, nodes)
-            >>> print("Connected to Blender")
-        """
-        self.plane = plane
-        self.modifier = modifier
-        self.created_nodes = created_nodes
-        print("🔗 Connected to Blender")
-
-
-class BlenderTrajectorySamplerUtilities:
-    """
-    Static utility functions for sampling trajectories with Blender environments.
-    No state, just pure functions.
-    """
-
-    @staticmethod
-    def sample_trajectory(
-        env: BlenderColorRampEnvironment,
-    ) -> List[Tuple[ColorRampState, int]]:
-        """
-        Sample a complete trajectory using the environment.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=3)
-            >>> trajectory = BlenderSamplerUtility.sample_trajectory(env)
-            >>> print(len(trajectory))  # 4 - scale + 3 colors
-        """
-        trajectory = []
-        state = env.get_initial_state()
-
-        while not env.is_terminal(state):
-            valid_actions = env.get_valid_actions(state)
-            if not valid_actions:
-                break
-
-            action = np.random.choice(valid_actions)
-            trajectory.append((state.copy(), action))
-            state = env.apply_action(state, action)
-
-        return trajectory
-
-    @staticmethod
-    def sample_batch(
-        env: BlenderColorRampEnvironment, n_trajectories: int
-    ) -> List[List[Tuple[ColorRampState, int]]]:
-        """
-        Sample batch of trajectories using the environment.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=3)
-            >>> trajectories = BlenderSamplerUtility.sample_batch(env, 100)
-            >>> print(len(trajectories))  # 100
-        """
-        trajectories = []
-        for i in range(n_trajectories):
-            trajectory = BlenderTrajectorySamplerUtilities.sample_trajectory(env)
-            trajectories.append(trajectory)
-
-            if (i + 1) % 10 == 0:
-                print(f"Sampled {i + 1}/{n_trajectories} trajectories")
-
-        return trajectories
-
-    @staticmethod
-    def evaluate_trajectory(
-        env: BlenderColorRampEnvironment, trajectory: List[Tuple[ColorRampState, int]]
-    ) -> Dict:
-        """
-        Evaluate a trajectory using the environment.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment()
-            >>> traj = BlenderSamplerUtility.sample_trajectory(env)
-            >>> stats = BlenderSamplerUtility.evaluate_trajectory(env, traj)
-            >>> print(stats['reward'])  # 1.0 or 0.0
-        """
-        if not trajectory:
-            return {"length": 0, "reward": 0.0}
-
-        final_state = trajectory[-1][0]
-        final_action = trajectory[-1][1]
-        terminal_state = env.apply_action(final_state, final_action)
-
-        return {
-            "length": len(trajectory),
-            "reward": env.get_reward(terminal_state),
-            "terminal": env.is_terminal(terminal_state),
-            "scale": terminal_state.scale,
-            "colors_count": len(terminal_state.colors),
-            "final_state": terminal_state,
-        }
-
-    @staticmethod
-    def evaluate_batch(
-        env: BlenderColorRampEnvironment,
-        trajectories: List[List[Tuple[ColorRampState, int]]],
-    ) -> List[Dict]:
-        """
-        Evaluate a batch of trajectories using the environment.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment()
-            >>> trajectories = BlenderSamplerUtility.sample_batch(env, 50)
-            >>> stats = BlenderSamplerUtility.evaluate_batch(env, trajectories)
-            >>> rewards = [s['reward'] for s in stats]
-            >>> print(f"Average reward: {np.mean(rewards):.3f}")
-        """
-        return [
-            BlenderTrajectorySamplerUtilities.evaluate_trajectory(env, traj)
-            for traj in trajectories
-        ]
-
-    @staticmethod
-    def sample_and_evaluate(
-        env: BlenderColorRampEnvironment, n_trajectories: int
-    ) -> Tuple[List[List[Tuple[ColorRampState, int]]], List[Dict]]:
-        """
-        Sample trajectories and evaluate them in one call.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment(max_colors=3)
-            >>> trajectories, stats = BlenderSamplerUtility.sample_and_evaluate(env, 100)
-            >>> success_rate = sum(1 for s in stats if s['reward'] > 0) / len(stats)
-            >>> print(f"Success rate: {success_rate:.2%}")
-        """
-        trajectories = BlenderTrajectorySamplerUtilities.sample_batch(
-            env, n_trajectories
-        )
-        stats = BlenderTrajectorySamplerUtilities.evaluate_batch(env, trajectories)
-        return trajectories, stats
-
-
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║                    GFLOW STUFF
 # ╚══════════════════════════════════════════════════════════════════════╝
+
+# ====================================================
+# This is the Arcitecture of a Standard GFN with trajectory Balance
+# ====================================================
 
 
 class TBModel(nn.Module):
@@ -1804,6 +983,254 @@ class TBModel(nn.Module):
         P_F_logits = self.forward_policy(state)
         P_B_logits = self.backward_policy(state)
         return P_F_logits, P_B_logits
+
+
+# ====================================================
+# Trajectory Sample Logic
+# ====================================================
+
+
+class ColorRampTrajectorySampler:
+    """
+    Trajectory sampler specifically for ColorRamp environment
+    Uses ColorRampEnvironmentConfig methods
+    """
+
+    def __init__(self, env_config: ColorRampEnvironmentConfig):
+        self.env_config = env_config
+
+    # ====================================================
+    # Random Sampleing Logic
+    # ====================================================
+
+    def sample_random_trajectory(
+        self, max_steps: int = 10
+    ) -> List[Tuple[ColorRampState, int]]:
+        """
+        Sample random trajectory using env_config methods
+
+        Returns:
+            List of (state, action) pairs
+        """
+        trajectory = []
+        current_state = ColorRampState()  # Start empty
+
+        for step in range(max_steps):
+            # Check if terminal
+            if ColorRampStateManager.is_terminal(current_state, self.env_config):
+                break
+
+            # Get valid actions using env_config
+            valid_actions = self.env_config.get_valid_actions(current_state)
+            if not valid_actions:
+                break
+
+            # Sample random action
+            action = random.choice(valid_actions)
+
+            # Store state-action pair
+            trajectory.append((current_state.copy(), action))
+
+            # Apply action to get next state
+            try:
+                current_state = ColorRampStateManager.apply_action(
+                    current_state, action, self.env_config
+                )
+            except ValueError as e:
+                print(f"Invalid action {action}: {e}")
+                break
+
+        return trajectory
+
+    # ====================================================
+    # Using state of the Model to sample Trajectorys
+    # (How we run mass infernect on the model)
+    # ====================================================
+
+    def sample_policy_trajectory(
+        self, model: TBModel, epsilon: float = 0.1, max_steps: int = 10
+    ) -> List[Tuple[ColorRampState, int]]:
+        """
+        Sample trajectory using model policy with epsilon-greedy
+
+        Args:
+            model: TBModel for policy
+            epsilon: Exploration probability
+            max_steps: Maximum steps
+
+        Returns:
+            List of (state, action) pairs
+        """
+        trajectory = []
+        current_state = ColorRampState()  # Start empty
+
+        for step in range(max_steps):
+            # Check if terminal
+            if ColorRampStateManager.is_terminal(current_state, self.env_config):
+                break
+
+            # Get valid actions using env_config
+            valid_actions = self.env_config.get_valid_actions(current_state)
+            if not valid_actions:
+                break
+
+            # Choose action: epsilon-greedy
+            if random.random() < epsilon:
+                # Explore: random action
+                action = random.choice(valid_actions)
+            else:
+                # Exploit: use model policy
+                state_tensor = ColorRampStateManager.state_to_tensor(
+                    current_state, self.env_config
+                )
+
+                with torch.no_grad():
+                    P_F_logits, _ = model(state_tensor)
+
+                # Mask invalid actions
+                action_mask = torch.full_like(P_F_logits, float("-inf"))
+                for valid_action in valid_actions:
+                    action_mask[valid_action] = 0.0
+
+                masked_logits = P_F_logits + action_mask
+                action_probs = F.softmax(masked_logits, dim=0)
+
+                # Sample from policy
+                action = torch.multinomial(action_probs, 1).item()
+
+            # Store state-action pair
+            trajectory.append((current_state.copy(), action))
+
+            # Apply action using env_config knowledge
+            try:
+                current_state = ColorRampStateManager.apply_action(
+                    current_state, action, self.env_config
+                )
+            except ValueError as e:
+                print(f"Invalid action {action}: {e}")
+                break
+
+        return trajectory
+
+    # ====================================================
+    # Batch traing
+    # ====================================================
+
+    def sample_batch(
+        self,
+        batch_size: int,
+        use_policy: bool = False,
+        model: Optional[TBModel] = None,
+        epsilon: float = 0.1,
+    ) -> List[List[Tuple[ColorRampState, int]]]:
+        """
+        Sample batch of trajectories
+
+        Args:
+            batch_size: Number of trajectories
+            use_policy: Whether to use model policy
+            model: TBModel (required if use_policy=True)
+            epsilon: Exploration rate for policy
+
+        Returns:
+            List of trajectories
+        """
+        trajectories = []
+
+        for i in range(batch_size):
+            try:
+                if use_policy and model is not None:
+                    traj = self.sample_policy_trajectory(model, epsilon)
+                else:
+                    traj = self.sample_random_trajectory()
+
+                trajectories.append(traj)
+            except Exception as e:
+                print(f"Error sampling trajectory {i}: {e}")
+                continue
+
+        return trajectories
+
+    # ====================================================
+    # Print trajectory in Human readable format
+    # ====================================================
+
+    def print_trajectory_info(self, trajectory: List[Tuple[ColorRampState, int]]):
+        """Print detailed trajectory information using env_config methods"""
+        print(f"Trajectory length: {len(trajectory)}")
+
+        for i, (state, action) in enumerate(trajectory):
+            # Decode action using env_config
+            action_info = self.env_config.decode_action(action)
+            action_str = self.env_config.action_to_string(action)
+
+            print(f"  Step {i}: {action_str}")
+            print(f"    State: scale={state.scale}, colors={state.colors}")
+            print(f"    Action info: {action_info}")
+
+        # Show final state
+        if trajectory:
+            final_state = trajectory[-1][0]
+            final_action = trajectory[-1][1]
+
+            # Apply final action to see end result
+            try:
+                end_state = ColorRampStateManager.apply_action(
+                    final_state, final_action, self.env_config
+                )
+                is_terminal = ColorRampStateManager.is_terminal(
+                    end_state, self.env_config
+                )
+                print(
+                    f"  Final state: scale={end_state.scale}, colors={end_state.colors}"
+                )
+                print(f"  Terminal: {is_terminal}")
+            except Exception as e:
+                print(f"  Error applying final action: {e}")
+
+
+class RewardUtilities:
+    """
+    Utility class for reward calculations within the Blender environment.
+    """
+
+    @staticmethod
+    def detect_holes(
+        tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
+    ) -> bool:
+        """
+        Detect holes in terrain data using binary fill method.
+        Args:
+            tensor: 2D array/tensor of height values
+            threshold: Height threshold for binary mask creation
+        Returns:
+            True if holes are detected, False otherwise
+        """
+        # Convert to numpy if needed
+        if torch.is_tensor(tensor):
+            noise = tensor.numpy()
+        else:
+            noise = tensor
+        # Create binary mask
+        binary_mask = noise > threshold
+        filled = ndimage.binary_fill_holes(binary_mask)
+        has_holes = (filled.sum() - binary_mask.sum()) > 0
+        return has_holes
+
+    @staticmethod
+    def compute_reward(
+        tensor: Union[np.ndarray, torch.Tensor], threshold: float = 0.5
+    ) -> float:
+        """
+        Compute reward based on hole detection.
+        Args:
+            tensor: 2D array/tensor of height values
+            threshold: Height threshold for binary mask creation
+        Returns:
+            1.0 if no holes detected, 0.0 if holes detected
+        """
+        has_holes = RewardUtilities.detect_holes(tensor, threshold)
+        return 0.0 if has_holes else 1.0
 
 
 def state_to_tensor(state):
