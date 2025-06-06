@@ -18,85 +18,9 @@ from mpl_toolkits.mplot3d import Axes3D
 # Detect holes using fill method
 from scipy import ndimage
 
-
 # ====================================================
-# File Utilities
+# Color Funcitons
 # ====================================================
-
-
-class SimpleSaver:
-    """Super simple Blender file saver"""
-
-    @staticmethod
-    def save_now(name="blender_save"):
-        import os
-
-        """Save current Blender file with timestamp"""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        filename = f"{name}_{timestamp}.blend"
-
-        # Create saves directory if it doesn't exist
-        save_dir = "./saves"
-        os.makedirs(save_dir, exist_ok=True)
-
-        filepath = os.path.join(save_dir, filename)
-
-        try:
-            bpy.ops.wm.save_as_mainfile(filepath=filepath)
-            print(f"✅ Saved: {filename}")
-            return filepath
-        except Exception as e:
-            print(f"❌ Save failed: {e}")
-            return None
-
-
-# Simple function for Jupyter
-def save_blend(name="experiment"):
-    """Quick save function"""
-    return SimpleSaver.save_now(name)
-
-
-# ====================================================
-# Color Logic
-# ====================================================
-
-
-@dataclass
-class ColorRampState:
-    """Represents a state in the color ramp construction process"""
-
-    scale: Optional[float] = None
-    colors: Dict[int, int] = None  # position_index -> color_id
-    step_count: int = 0
-
-    def __post_init__(self):
-        if self.colors is None:
-            self.colors = {}
-
-    def __hash__(self):
-        if self.scale is None:
-            scale_tuple = (None,)
-        else:
-            scale_tuple = (self.scale,)
-        colors_tuple = tuple(sorted(self.colors.items()))
-        return hash((scale_tuple, colors_tuple, self.step_count))
-
-    def __eq__(self, other):
-        if not isinstance(other, ColorRampState):
-            return False
-        return (
-            self.scale == other.scale
-            and self.colors == other.colors
-            and self.step_count == other.step_count
-        )
-
-    def copy(self):
-        return ColorRampState(
-            scale=self.scale, colors=self.colors.copy(), step_count=self.step_count
-        )
-
-    def is_terminal(self, max_colors: int) -> bool:
-        return self.scale is not None and len(self.colors) >= max_colors
 
 
 class RGBA(NamedTuple):
@@ -109,25 +33,6 @@ class RGBA(NamedTuple):
 
     def __str__(self):
         return f"RGBA(r={self.red:.1f}, g={self.green:.1f}, b={self.blue:.1f}, a={self.alpha:.1f})"
-
-
-class ColorID(IntEnum):
-    """Predefined color IDs for easy reference"""
-
-    BLACK = 0
-    WHITE = 1
-    RED = 2
-    GREEN = 3
-    BLUE = 4
-    YELLOW = 5
-    MAGENTA = 6
-    CYAN = 7
-    # IDs 8+ are procedurally generated
-
-
-# ====================================================
-# Color Funcitons
-# ====================================================
 
 
 class ColorUtilities:
@@ -333,6 +238,472 @@ class ColorUtilities:
         return random.randint(0, len(ColorUtilities.PALETTE_32_COLORS) - 1)
 
 
+@dataclass
+class ColorRampState:
+    """Represents a state in the color ramp construction process"""
+
+    scale: Optional[float] = None
+    colors: Dict[int, int] = None  # position_index -> color_id
+    step_count: int = 0
+
+    def __post_init__(self):
+        if self.colors is None:
+            self.colors = {}
+
+    def __hash__(self):
+        if self.scale is None:
+            scale_tuple = (None,)
+        else:
+            scale_tuple = (self.scale,)
+        colors_tuple = tuple(sorted(self.colors.items()))
+        return hash((scale_tuple, colors_tuple, self.step_count))
+
+    def __eq__(self, other):
+        if not isinstance(other, ColorRampState):
+            return False
+        return (
+            self.scale == other.scale
+            and self.colors == other.colors
+            and self.step_count == other.step_count
+        )
+
+    def copy(self):
+        return ColorRampState(
+            scale=self.scale, colors=self.colors.copy(), step_count=self.step_count
+        )
+
+    def is_terminal(self, max_colors: int) -> bool:
+        return self.scale is not None and len(self.colors) >= max_colors
+
+
+@dataclass
+class ColorRampEnvironmentConfig:
+    """Configuration for ColorRamp environment"""
+
+    available_scales: List[float] = None
+    max_colors: int = 5
+    num_color_choices: int = 32
+
+    def __post_init__(self):
+        if self.available_scales is None:
+            self.available_scales = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0]
+
+    class DefaultConfigs:
+        """Factory for common ColorRamp configurations"""
+
+        @staticmethod
+        def default():
+            """Default configuration"""
+            return ColorRampEnvironmentConfig()
+
+        @staticmethod
+        def small():
+            """Small configuration for testing"""
+            return ColorRampEnvironmentConfig(
+                available_scales=[0.5, 1.0, 2.0], max_colors=3, num_color_choices=8
+            )
+
+        @staticmethod
+        def large():
+            """Large configuration for complex experiments"""
+            return ColorRampEnvironmentConfig(
+                available_scales=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0],
+                max_colors=8,
+                num_color_choices=64,
+            )
+
+
+class ColorRampStateManager:
+    """
+    Static methods for managing ColorRampState environment logic
+    """
+
+    @staticmethod
+    def state_to_tensor(state, config):
+        """
+        Convert ColorRampState to tensor representation
+
+        Args:
+            state: ColorRampState object
+            config: ColorRampConfig object
+
+        Returns:
+            torch.Tensor: Encoded state tensor
+        """
+        encoding = []
+
+        # Scale encoding (one-hot based on available scales)
+        if state.scale is None:
+            scale_encoding = [0.0] * len(config.available_scales)
+        else:
+            scale_encoding = [0.0] * len(config.available_scales)
+            if state.scale in config.available_scales:
+                scale_idx = config.available_scales.index(state.scale)
+                scale_encoding[scale_idx] = 1.0
+        encoding.extend(scale_encoding)
+
+        # Colors encoding (one-hot for each position)
+        for pos in range(config.max_colors):
+            if pos in state.colors:
+                color_id = state.colors[pos]
+                color_encoding = [0.0] * config.num_color_choices
+                if 0 <= color_id < config.num_color_choices:
+                    color_encoding[color_id] = 1.0
+            else:
+                color_encoding = [0.0] * config.num_color_choices
+            encoding.extend(color_encoding)
+
+        # Step count (normalized)
+        max_steps = config.max_colors + 1  # scale + colors
+        step_encoding = [state.step_count / max_steps]
+        encoding.extend(step_encoding)
+
+        return torch.tensor(encoding, dtype=torch.float32)
+
+    @staticmethod
+    def get_valid_actions(state, config):
+        """Get valid actions from current state"""
+        if state.scale is None:
+            # Must choose scale first - return scale action indices
+            return list(range(len(config.available_scales)))
+
+        # Can add colors to unoccupied positions
+        occupied_positions = set(state.colors.keys())
+        available_positions = [
+            i for i in range(config.max_colors) if i not in occupied_positions
+        ]
+
+        if not available_positions:
+            return []  # Terminal state
+
+        valid_actions = []
+        scale_offset = len(config.available_scales)
+
+        for pos in available_positions:
+            for color_id in range(config.num_color_choices):
+                action = scale_offset + pos * config.num_color_choices + color_id
+                valid_actions.append(action)
+
+        return valid_actions
+
+    @staticmethod
+    def apply_action(state, action, config):
+        """Apply action to state to get next state"""
+        if action not in ColorRampStateManager.get_valid_actions(state, config):
+            raise ValueError(f"Invalid action {action} for state {state}")
+
+        next_state = state.copy()
+        next_state.step_count += 1
+
+        if state.scale is None:
+            # Choose scale
+            if 0 <= action < len(config.available_scales):
+                next_state.scale = config.available_scales[action]
+            else:
+                raise ValueError(f"Invalid scale action {action}")
+        else:
+            # Add color
+            scale_offset = len(config.available_scales)
+            color_action = action - scale_offset
+
+            position_idx = color_action // config.num_color_choices
+            color_id = color_action % config.num_color_choices
+
+            if position_idx in state.colors:
+                raise ValueError(f"Position {position_idx} already occupied")
+
+            next_state.colors[position_idx] = color_id
+
+        return next_state
+
+    @staticmethod
+    def is_terminal(state, config):
+        """Check if state is terminal"""
+        return state.is_terminal(config.max_colors)
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║                    BLENDER STUFF
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+
+@dataclass
+class BlenderProcedureConfig:
+    """Configuration for Blender geometry node procedures"""
+
+    # Node definitions: (name, node_type)
+    nodes: List[Tuple[str, str]]
+
+    # Connections: (from_node, from_output, to_node, to_input)
+    connections: List[Tuple[str, str, str, str]]
+
+    # Node group settings
+    node_group_name: str = "ProcedureGroup"
+    node_group_type: str = "GeometryNodeTree"
+
+    # Interface sockets: (name, in_out, socket_type)
+    input_sockets: List[Tuple[str, str]] = None
+    output_sockets: List[Tuple[str, str]] = None
+
+    def __post_init__(self):
+        if self.input_sockets is None:
+            self.input_sockets = [("Geometry", "NodeSocketGeometry")]
+        if self.output_sockets is None:
+            self.output_sockets = [("Geometry", "NodeSocketGeometry")]
+
+
+class BlenderProcedureFactory:
+    """Factory for creating common Blender geometry node procedures"""
+
+    @staticmethod
+    def color_ramp_terrain():
+        """
+        Create config for color ramp terrain generation procedure
+        Based on your test_color_ramp configuration
+        """
+        return BlenderProcedureConfig(
+            nodes=[
+                ("noise", "ShaderNodeTexNoise"),
+                ("combine", "ShaderNodeCombineXYZ"),
+                ("ramp", "ShaderNodeValToRGB"),
+                ("set_pos", "GeometryNodeSetPosition"),
+            ],
+            connections=[
+                ("noise", "Fac", "combine", "X"),
+                ("noise", "Fac", "combine", "Y"),
+                ("noise", "Fac", "combine", "Z"),
+                ("combine", "Vector", "ramp", "Fac"),
+                ("ramp", "Color", "set_pos", "Offset"),
+            ],
+            node_group_name="ColorRampTerrainGroup",
+        )
+
+    @staticmethod
+    def simple_noise():
+        """Simple noise displacement procedure"""
+        return BlenderProcedureConfig(
+            nodes=[
+                ("noise", "ShaderNodeTexNoise"),
+                ("set_pos", "GeometryNodeSetPosition"),
+            ],
+            connections=[("noise", "Fac", "set_pos", "Offset")],
+            node_group_name="SimpleNoiseGroup",
+        )
+
+    @staticmethod
+    def displacement_with_scale():
+        """Noise displacement with scale control"""
+        return BlenderProcedureConfig(
+            nodes=[
+                ("noise", "ShaderNodeTexNoise"),
+                ("multiply", "ShaderNodeMath"),
+                ("set_pos", "GeometryNodeSetPosition"),
+            ],
+            connections=[
+                ("noise", "Fac", "multiply", "Value"),
+                ("multiply", "Value", "set_pos", "Offset"),
+            ],
+            node_group_name="ScaledDisplacementGroup",
+        )
+
+
+# ====================================================
+# Helper functions for create_blender_procedure
+# ====================================================
+
+
+class BlenderProcedureBuilder:
+    """Builder class to create Blender procedures from config"""
+
+    @staticmethod
+    def create_procedure(config: BlenderProcedureConfig, clear_existing: bool = True):
+        """
+        Create a Blender geometry node procedure from config
+
+        Args:
+            config: BlenderProcedureConfig defining the procedure
+            clear_existing: Whether to clear existing objects and node groups
+
+        Returns:
+            Tuple of (plane_object, created_nodes_dict)
+        """
+
+        if clear_existing:
+            BlenderProcedureBuilder._clear_scene()
+
+        # Create node group
+        node_group = BlenderProcedureBuilder._create_node_group(config)
+
+        # Create and connect nodes
+        created_nodes = BlenderProcedureBuilder._create_nodes(node_group, config)
+
+        # Set up group interface and connections
+        BlenderProcedureBuilder._setup_group_interface(
+            node_group, config, created_nodes
+        )
+
+        # Create demonstration object (plane with subdivisions)
+        plane = BlenderProcedureBuilder._create_demo_plane(node_group)
+
+        return plane, created_nodes
+
+    @staticmethod
+    def _clear_scene():
+        """Clear existing objects and node groups"""
+        print("Clearing existing mesh objects...")
+        bpy.ops.object.select_all(action="SELECT")
+        bpy.ops.object.delete(use_global=False)
+
+        print(f"Clearing {len(bpy.data.node_groups)} existing node groups...")
+        for node_group in bpy.data.node_groups:
+            bpy.data.node_groups.remove(node_group)
+
+    @staticmethod
+    def _create_node_group(config: BlenderProcedureConfig):
+        """Create the geometry node group"""
+        print(f"Creating geometry node group: {config.node_group_name}")
+        return bpy.data.node_groups.new(config.node_group_name, config.node_group_type)
+
+    @staticmethod
+    def _create_nodes(node_group, config: BlenderProcedureConfig) -> Dict[str, Any]:
+        """Create nodes and connections according to config"""
+        nodes = node_group.nodes
+        links = node_group.links
+        created_nodes = {}
+
+        print(f"Creating {len(config.nodes)} nodes...")
+        for name, node_type in config.nodes:
+            created_nodes[name] = nodes.new(node_type)
+            print(f"  - Created {node_type} node named '{name}'")
+
+        print(f"Creating {len(config.connections)} connections...")
+        for from_node, from_out, to_node, to_in in config.connections:
+            links.new(
+                created_nodes[from_node].outputs[from_out],
+                created_nodes[to_node].inputs[to_in],
+            )
+            print(f"  - Connected {from_node}.{from_out} → {to_node}.{to_in}")
+
+        return created_nodes
+
+    @staticmethod
+    def _setup_group_interface(
+        node_group, config: BlenderProcedureConfig, created_nodes
+    ):
+        """Set up group input/output interface"""
+        print("Setting up node group interface...")
+
+        # Add group input and output nodes
+        group_input = node_group.nodes.new("NodeGroupInput")
+        group_output = node_group.nodes.new("NodeGroupOutput")
+
+        # Set up interface sockets (Blender 4.4+)
+        try:
+            if hasattr(node_group, "interface"):
+                # Add input sockets
+                for name, socket_type in config.input_sockets:
+                    node_group.interface.new_socket(
+                        name=name, in_out="INPUT", socket_type=socket_type
+                    )
+                    print(f"  - Added input socket: {name}")
+
+                # Add output sockets
+                for name, socket_type in config.output_sockets:
+                    node_group.interface.new_socket(
+                        name=name, in_out="OUTPUT", socket_type=socket_type
+                    )
+                    print(f"  - Added output socket: {name}")
+        except Exception as e:
+            print(f"  - Error setting up interface: {e}")
+
+        # Connect to first and last nodes (assumes set_pos is the final node)
+        if "set_pos" in created_nodes:
+            node_group.links.new(
+                group_input.outputs[0], created_nodes["set_pos"].inputs["Geometry"]
+            )
+            node_group.links.new(
+                created_nodes["set_pos"].outputs["Geometry"], group_output.inputs[0]
+            )
+            print("  - Connected Group Input → Set Position → Group Output")
+
+    @staticmethod
+    def _create_demo_plane(node_group):
+        """Create a plane with subdivisions and apply the node group"""
+        print("Creating demonstration plane...")
+
+        # Create plane
+        bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, 0))
+        plane = bpy.context.active_object
+
+        # Add subdivisions
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.subdivide(number_cuts=15)
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Add geometry nodes modifier
+        geo_mod = plane.modifiers.new("GeometryNodes", "NODES")
+
+        try:
+            geo_mod.node_group = node_group
+            print(f"  - Applied node group: {node_group.name}")
+        except Exception as e:
+            print(f"  - Could not assign node group: {e}")
+
+        return plane
+
+
+# ====================================================
+# IMPORTANT FUNCTION: this is the function that sets up Blender
+# ====================================================
+
+
+def create_blender_procedure(config: BlenderProcedureConfig):
+    clear_existing: bool = True
+    BlenderProcedureBuilder.create_procedure(config, clear_existing)
+
+
+def create_blender_procedure_dont_clear(config: BlenderProcedureConfig):
+    clear_existing: bool = False
+    BlenderProcedureBuilder.create_procedure(config, clear_existing)
+
+
+# ====================================================
+# File Utilities
+# ====================================================
+
+
+class BlenderFileSaverUtility:
+    """Super simple Blender file saver"""
+
+    @staticmethod
+    def save_now(name="blender_save"):
+        import os
+
+        """Save current Blender file with timestamp"""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{name}_{timestamp}.blend"
+
+        # Create saves directory if it doesn't exist
+        save_dir = "./saves"
+        os.makedirs(save_dir, exist_ok=True)
+
+        filepath = os.path.join(save_dir, filename)
+
+        try:
+            bpy.ops.wm.save_as_mainfile(filepath=filepath)
+            print(f"✅ Saved: {filename}")
+            return filepath
+        except Exception as e:
+            print(f"❌ Save failed: {e}")
+            return None
+
+
+# Simple function for Jupyter
+def save_blend(name="experiment"):
+    """Quick save function"""
+    return BlenderFileSaverUtility.save_now(name)
+
+
 # ====================================================
 # Blender Experiment Environment
 # ====================================================
@@ -397,36 +768,38 @@ class BlenderUtilities:
 
         return plane, {"noise": noise, "ramp": ramp}
 
+    # ====================================================
+    # Upadate Blender state with Color Ramp state Data
+    # ====================================================
     @staticmethod
-    def update_procedure_parameters(nodes, config):
-        """Update the procedure parameters with config"""
+    def update_blender_from_state(state, nodes):
+        """
+        Update Blender scene from ColorRampState
 
-        # Update noise parameters
-        nodes["noise"].inputs["Scale"].default_value = config["noise_scale"]
-        nodes["noise"].inputs["Detail"].default_value = config["noise_detail"]
-        nodes["noise"].inputs["Roughness"].default_value = config["noise_roughness"]
+        Args:
+            state: ColorRampState object
+            nodes: nodes dict with 'noise' and 'ramp' keys
+        """
+        # Update noise scale
+        nodes["noise"].inputs["Scale"].default_value = state.scale
 
         # Update color ramp
         color_ramp = nodes["ramp"].color_ramp
-        color_ramp.interpolation = "B_SPLINE"
 
-        # Clear existing elements
-        while len(color_ramp.elements) > 2:
+        while len(color_ramp.elements) > len(state.colors):
             color_ramp.elements.remove(color_ramp.elements[-1])
+        while len(color_ramp.elements) < len(state.colors):
+            color_ramp.elements.new(0.5)
 
-        # Set first two elements
-        color_ramp.elements[0].position = config["colors"][0][0]
-        color_ramp.elements[0].color = config["colors"][0][1]
-        color_ramp.elements[1].position = config["colors"][1][0]
-        color_ramp.elements[1].color = config["colors"][1][1]
-
-        # Add additional elements
-        for position, color in config["colors"][2:]:
-            element = color_ramp.elements.new(position)
-            element.color = color
+        for i, (pos_idx, color_id) in enumerate(sorted(state.colors.items())):
+            position = ColorUtilities.calculate_position(pos_idx, 5)
+            rgba = ColorUtilities.color_id_to_rgba_tuple(color_id)
+            color_ramp.elements[i].position = position
+            color_ramp.elements[i].color = rgba
 
         # Force update
         bpy.context.view_layer.update()
+        bpy.context.evaluated_depsgraph_get().update()
 
     @staticmethod
     def get_plane_from_scene(plane_name="Plane"):
@@ -461,11 +834,14 @@ class BlenderUtilities:
             print(f"Error getting plane from scene: {e}")
             return None
 
+    # ====================================================
+    # Reward Helper for getting height map
+    # ====================================================
+
     @staticmethod
     def extract_terrain_tensor(plane) -> Optional[torch.Tensor]:
         """
         Extract terrain height data from Blender plane as tensor.
-        FIXED VERSION - Ensures geometry nodes are properly applied.
 
         Args:
             plane: Blender plane object with geometry nodes
@@ -1395,527 +1771,9 @@ class BlenderTrajectorySamplerUtilities:
         return trajectories, stats
 
 
-class BlenderVisualizationUtility:
-    """
-    Static utility functions for visualizing Blender color ramp environments and results.
-    """
-
-    @staticmethod
-    def visualize_color_ramp(
-        state, title: str = "Color Ramp", save_path: Optional[str] = None
-    ):
-        """
-        Visualize the color ramp configuration.
-
-        Example:
-            >>> state = ColorRampState(scale=5.0, colors={0: 1, 2: 15, 4: 31})
-            >>> BlenderVisualizationUtility.visualize_color_ramp(state, "My Color Ramp")
-        """
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-
-        # Left: Color ramp visualization
-        if state.colors:
-            positions = []
-            colors = []
-
-            for pos_idx in sorted(state.colors.keys()):
-                color_id = state.colors[pos_idx]
-                normalized_pos = (pos_idx + 1) / 5  # Assuming max_colors=5 for now
-                rgba = BlenderVisualizationUtility._color_id_to_rgb(color_id)
-
-                positions.append(normalized_pos)
-                colors.append(rgba[:3])  # RGB only
-
-            # Create gradient visualization
-            gradient = np.linspace(0, 1, 256).reshape(1, -1)
-
-            # Interpolate colors for display
-            interp_colors = np.zeros((1, 256, 3))
-            for i in range(256):
-                x = i / 255.0
-                # Find surrounding color positions
-                left_idx = 0
-                right_idx = len(positions) - 1
-
-                for j in range(len(positions) - 1):
-                    if positions[j] <= x <= positions[j + 1]:
-                        left_idx = j
-                        right_idx = j + 1
-                        break
-
-                if len(positions) == 1:
-                    interp_colors[0, i] = colors[0]
-                else:
-                    # Linear interpolation
-                    if x <= positions[0]:
-                        interp_colors[0, i] = colors[0]
-                    elif x >= positions[-1]:
-                        interp_colors[0, i] = colors[-1]
-                    else:
-                        t = (x - positions[left_idx]) / (
-                            positions[right_idx] - positions[left_idx]
-                        )
-                        interp_colors[0, i] = (1 - t) * np.array(
-                            colors[left_idx]
-                        ) + t * np.array(colors[right_idx])
-
-            ax1.imshow(interp_colors, aspect="auto", extent=[0, 1, 0, 1])
-
-            # Mark color positions
-            for pos, color in zip(positions, colors):
-                ax1.axvline(x=pos, color="white", linewidth=2, alpha=0.8)
-                ax1.axvline(x=pos, color="black", linewidth=1, alpha=0.8)
-                ax1.text(
-                    pos,
-                    0.5,
-                    f"{pos:.2f}",
-                    rotation=90,
-                    ha="center",
-                    va="center",
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-                )
-
-        else:
-            # Default black to white
-            gradient = np.linspace(0, 1, 256).reshape(1, -1)
-            ax1.imshow(gradient, cmap="gray", aspect="auto", extent=[0, 1, 0, 1])
-
-        ax1.set_xlim(0, 1)
-        ax1.set_xlabel("Position")
-        ax1.set_title("Color Ramp")
-        ax1.set_yticks([])
-
-        # Right: Color information
-        ax2.axis("off")
-        info_text = f"""
-        COLOR RAMP INFO:
-        
-        Scale: {state.scale if state.scale else "Not set"}
-        Colors placed: {len(state.colors)}
-        
-        Color Details:
-        """
-
-        if state.colors:
-            for pos_idx in sorted(state.colors.keys()):
-                color_id = state.colors[pos_idx]
-                normalized_pos = (pos_idx + 1) / 5
-                rgba = BlenderVisualizationUtility._color_id_to_rgb(color_id)
-                info_text += (
-                    f"\n  Pos {normalized_pos:.2f}: Color {color_id} {rgba[:3]}"
-                )
-        else:
-            info_text += "\n  No colors placed"
-
-        ax2.text(
-            0.1,
-            0.9,
-            info_text,
-            fontsize=10,
-            verticalalignment="top",
-            fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue"),
-        )
-
-        plt.suptitle(title, fontsize=14, fontweight="bold")
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            plt.close()
-        else:
-            plt.show()
-
-    @staticmethod
-    def visualize_terrain(
-        env, state, title: str = "Generated Terrain", save_path: Optional[str] = None
-    ):
-        """
-        Visualize the 3D terrain generated by the color ramp state.
-
-        Example:
-            >>> env = BlenderColorRampEnvironment()
-            >>> env.connect_blender(plane, modifier, nodes)
-            >>> state = ColorRampState(scale=5.0, colors={0: 1, 2: 15})
-            >>> BlenderVisualizationUtility.visualize_terrain(env, state)
-        """
-        if not env.is_terminal(state):
-            print("⚠️ State is not terminal, terrain may be incomplete")
-
-        try:
-            # Get terrain data
-            reward = env.get_reward(state)  # This applies state to Blender
-
-            # Extract terrain tensor (duplicate the logic from get_reward)
-            if not env.plane:
-                print("❌ Blender not connected")
-                return
-
-            import bpy
-
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            plane_eval = env.plane.evaluated_get(depsgraph)
-            mesh = plane_eval.to_mesh()
-
-            verts = np.array([(v.co.x, v.co.y, v.co.z) for v in mesh.vertices])
-            grid_size = int(np.sqrt(len(verts)))
-            heights = verts[:, 2].reshape(grid_size, grid_size)
-
-            plane_eval.to_mesh_clear()
-
-            fig = plt.figure(figsize=(15, 10))
-
-            # 1. 3D Surface
-            ax1 = fig.add_subplot(2, 2, 1, projection="3d")
-            x = np.arange(heights.shape[1])
-            y = np.arange(heights.shape[0])
-            X, Y = np.meshgrid(x, y)
-
-            # Subsample for performance
-            step = max(1, heights.shape[0] // 32)
-            X_sub = X[::step, ::step]
-            Y_sub = Y[::step, ::step]
-            heights_sub = heights[::step, ::step]
-
-            surf = ax1.plot_surface(
-                X_sub, Y_sub, heights_sub, cmap="terrain", alpha=0.8
-            )
-            ax1.set_title("3D Terrain Surface")
-            ax1.set_xlabel("X")
-            ax1.set_ylabel("Y")
-            ax1.set_zlabel("Height")
-
-            # 2. Height map
-            ax2 = fig.add_subplot(2, 2, 2)
-            im = ax2.imshow(heights, cmap="terrain", origin="lower")
-            ax2.set_title("Height Map")
-            plt.colorbar(im, ax=ax2, label="Height")
-
-            # 3. Binary threshold visualization
-            ax3 = fig.add_subplot(2, 2, 3)
-            threshold = 0.5
-            binary_mask = heights > threshold
-            ax3.imshow(binary_mask, cmap="RdYlBu_r", origin="lower")
-            ax3.set_title(f"Binary Mask (threshold={threshold})")
-
-            # 4. Statistics
-            ax4 = fig.add_subplot(2, 2, 4)
-            ax4.axis("off")
-
-            # Hole detection
-            from scipy import ndimage
-
-            filled = ndimage.binary_fill_holes(binary_mask)
-            has_holes = (filled.sum() - binary_mask.sum()) > 0
-
-            stats_text = f"""
-            TERRAIN STATISTICS:
-            
-            Scale: {state.scale}
-            Colors: {len(state.colors)}
-            Reward: {reward:.1f}
-            
-            Terrain Info:
-            Shape: {heights.shape}
-            Height range: [{heights.min():.3f}, {heights.max():.3f}]
-            Mean height: {heights.mean():.3f}
-            Std height: {heights.std():.3f}
-            
-            Threshold Analysis:
-            Threshold: {threshold}
-            Above threshold: {binary_mask.sum()}/{binary_mask.size}
-            Coverage: {100 * binary_mask.sum() / binary_mask.size:.1f}%
-            
-            Hole Detection:
-            Has holes: {"Yes" if has_holes else "No"}
-            Status: {"❌ FAIL" if has_holes else "✅ PASS"}
-            """
-
-            ax4.text(
-                0.1,
-                0.9,
-                stats_text,
-                fontsize=10,
-                verticalalignment="top",
-                fontfamily="monospace",
-                bbox=dict(
-                    boxstyle="round,pad=0.5",
-                    facecolor="lightcoral" if has_holes else "lightgreen",
-                ),
-            )
-
-            plt.suptitle(
-                f"{title} (Reward: {reward:.1f})", fontsize=14, fontweight="bold"
-            )
-            plt.tight_layout()
-
-            if save_path:
-                plt.savefig(save_path, dpi=150, bbox_inches="tight")
-                plt.close()
-            else:
-                plt.show()
-
-        except Exception as e:
-            print(f"❌ Error visualizing terrain: {e}")
-
-    @staticmethod
-    def visualize_trajectory(
-        env,
-        trajectory: List[Tuple],
-        title: str = "Trajectory Evolution",
-        save_path: Optional[str] = None,
-    ):
-        """
-        Visualize the evolution of a trajectory.
-
-        Example:
-            >>> trajectory = BlenderSamplerUtility.sample_trajectory(env)
-            >>> BlenderVisualizationUtility.visualize_trajectory(env, trajectory)
-        """
-        if not trajectory:
-            print("❌ Empty trajectory")
-            return
-
-        n_steps = len(trajectory)
-        fig, axes = plt.subplots(2, min(4, n_steps), figsize=(4 * min(4, n_steps), 8))
-
-        if n_steps == 1:
-            axes = axes.reshape(2, 1)
-        elif n_steps < 4:
-            # Pad with empty subplots
-            for i in range(n_steps, 4):
-                if n_steps > 1:
-                    axes[0, i].axis("off")
-                    axes[1, i].axis("off")
-
-        for i, (state, action) in enumerate(trajectory[:4]):  # Show first 4 steps
-            # Color ramp evolution
-            ax_ramp = axes[0, i] if n_steps > 1 else axes[0]
-
-            if state.colors:
-                positions = []
-                colors = []
-
-                for pos_idx in sorted(state.colors.keys()):
-                    color_id = state.colors[pos_idx]
-                    normalized_pos = (pos_idx + 1) / 5
-                    rgba = BlenderVisualizationUtility._color_id_to_rgb(color_id)
-                    positions.append(normalized_pos)
-                    colors.append(rgba[:3])
-
-                # Simple color bar visualization
-                for j, (pos, color) in enumerate(zip(positions, colors)):
-                    ax_ramp.barh(0, 0.1, left=pos - 0.05, color=color, height=0.5)
-                    ax_ramp.text(pos, 0.7, f"{pos:.2f}", ha="center", fontsize=8)
-
-            ax_ramp.set_xlim(0, 1)
-            ax_ramp.set_ylim(0, 1)
-            ax_ramp.set_title(f"Step {i + 1}: Action {action}")
-            ax_ramp.set_xlabel("Position")
-            ax_ramp.set_yticks([])
-
-            # State info
-            ax_info = axes[1, i] if n_steps > 1 else axes[1]
-            ax_info.axis("off")
-
-            info_text = f"""
-            Step {i + 1}:
-            
-            Action: {action}
-            Scale: {state.scale}
-            Colors: {len(state.colors)}
-            
-            State:
-            {state.colors}
-            """
-
-            ax_info.text(
-                0.1,
-                0.9,
-                info_text,
-                fontsize=9,
-                verticalalignment="top",
-                fontfamily="monospace",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow"),
-            )
-
-        plt.suptitle(title, fontsize=14, fontweight="bold")
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            plt.close()
-        else:
-            plt.show()
-
-    @staticmethod
-    def visualize_batch_results(
-        env,
-        trajectories: List[List[Tuple]],
-        stats: List[Dict],
-        title: str = "Batch Results",
-        save_path: Optional[str] = None,
-    ):
-        """
-        Visualize batch sampling results.
-
-        Example:
-            >>> trajectories, stats = BlenderSamplerUtility.sample_and_evaluate(env, 100)
-            >>> BlenderVisualizationUtility.visualize_batch_results(env, trajectories, stats)
-        """
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-
-        # Extract data
-        rewards = [s["reward"] for s in stats]
-        lengths = [s["length"] for s in stats]
-        scales = [s["scale"] for s in stats if s["scale"] is not None]
-        colors_counts = [s["colors_count"] for s in stats]
-
-        # 1. Reward distribution
-        axes[0, 0].hist(rewards, bins=20, alpha=0.7, color="skyblue", edgecolor="black")
-        axes[0, 0].set_title("Reward Distribution")
-        axes[0, 0].set_xlabel("Reward")
-        axes[0, 0].set_ylabel("Count")
-        axes[0, 0].grid(True, alpha=0.3)
-
-        success_rate = sum(1 for r in rewards if r > 0) / len(rewards)
-        axes[0, 0].text(
-            0.7,
-            0.8,
-            f"Success Rate: {success_rate:.1%}",
-            transform=axes[0, 0].transAxes,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow"),
-        )
-
-        # 2. Trajectory length distribution
-        axes[0, 1].hist(
-            lengths, bins=20, alpha=0.7, color="lightgreen", edgecolor="black"
-        )
-        axes[0, 1].set_title("Trajectory Length Distribution")
-        axes[0, 1].set_xlabel("Length")
-        axes[0, 1].set_ylabel("Count")
-        axes[0, 1].grid(True, alpha=0.3)
-
-        # 3. Scale distribution
-        if scales:
-            axes[0, 2].hist(
-                scales, bins=20, alpha=0.7, color="lightcoral", edgecolor="black"
-            )
-            axes[0, 2].set_title("Scale Distribution")
-            axes[0, 2].set_xlabel("Scale")
-            axes[0, 2].set_ylabel("Count")
-            axes[0, 2].grid(True, alpha=0.3)
-        else:
-            axes[0, 2].text(0.5, 0.5, "No scales recorded", ha="center", va="center")
-            axes[0, 2].set_title("Scale Distribution")
-
-        # 4. Colors vs Reward scatter
-        axes[1, 0].scatter(colors_counts, rewards, alpha=0.6, c=rewards, cmap="RdYlGn")
-        axes[1, 0].set_title("Colors vs Reward")
-        axes[1, 0].set_xlabel("Number of Colors")
-        axes[1, 0].set_ylabel("Reward")
-        axes[1, 0].grid(True, alpha=0.3)
-
-        # 5. Scale vs Reward scatter (if available)
-        if scales and len(scales) == len(rewards):
-            scatter = axes[1, 1].scatter(
-                scales, rewards, alpha=0.6, c=rewards, cmap="RdYlGn"
-            )
-            axes[1, 1].set_title("Scale vs Reward")
-            axes[1, 1].set_xlabel("Scale")
-            axes[1, 1].set_ylabel("Reward")
-            axes[1, 1].grid(True, alpha=0.3)
-            plt.colorbar(scatter, ax=axes[1, 1], label="Reward")
-        else:
-            axes[1, 1].text(
-                0.5, 0.5, "Insufficient scale data", ha="center", va="center"
-            )
-            axes[1, 1].set_title("Scale vs Reward")
-
-        # 6. Summary statistics
-        axes[1, 2].axis("off")
-
-        summary_text = f"""
-        BATCH SUMMARY:
-        
-        Total trajectories: {len(trajectories)}
-        
-        Rewards:
-        Success rate: {success_rate:.1%}
-        Average reward: {np.mean(rewards):.3f}
-        
-        Trajectories:
-        Average length: {np.mean(lengths):.1f}
-        Length range: [{min(lengths)}, {max(lengths)}]
-        
-        Scales:
-        Unique scales: {len(set(scales)) if scales else 0}
-        Most common: {max(set(scales), key=scales.count) if scales else "N/A"}
-        
-        Colors:
-        Average colors: {np.mean(colors_counts):.1f}
-        Max colors: {max(colors_counts)}
-        """
-
-        axes[1, 2].text(
-            0.1,
-            0.9,
-            summary_text,
-            fontsize=11,
-            verticalalignment="top",
-            fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue"),
-        )
-
-        plt.suptitle(
-            f"{title} ({len(trajectories)} trajectories)",
-            fontsize=16,
-            fontweight="bold",
-        )
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            plt.close()
-        else:
-            plt.show()
-
-    @staticmethod
-    def _color_id_to_rgb(color_id: int) -> Tuple[float, float, float, float]:
-        """Convert color ID to RGBA (internal helper method)"""
-        if color_id == 0:
-            return (0.0, 0.0, 0.0, 1.0)
-        elif color_id == 1:
-            return (1.0, 1.0, 1.0, 1.0)
-        elif color_id < 8:
-            colors = [
-                (1.0, 0.0, 0.0, 1.0),
-                (0.0, 1.0, 0.0, 1.0),
-                (0.0, 0.0, 1.0, 1.0),
-                (1.0, 1.0, 0.0, 1.0),
-                (1.0, 0.0, 1.0, 1.0),
-                (0.0, 1.0, 1.0, 1.0),
-            ]
-            return colors[color_id - 2]
-        else:
-            hue = ((color_id - 8) / (32 - 8)) * 360
-            saturation = 0.8 if color_id % 2 == 0 else 1.0
-            value = 0.9 if color_id % 3 == 0 else 0.7
-            r, g, b = colorsys.hsv_to_rgb(hue / 360, saturation, value)
-            return (r, g, b, 1.0)
-
-
-def create_blender_environment(
-    max_colors: int = 5, num_color_choices: int = 32
-) -> BlenderColorRampEnvironment:
-    """
-    Factory function to create Blender environment.
-
-    Example:
-        >>> env = create_blender_environment(max_colors=3, num_color_choices=8)
-        >>> print(f"Created environment with {env.max_colors} max colors")
-    """
-    return BlenderColorRampEnvironment(max_colors, num_color_choices)
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║                    GFLOW STUFF
+# ╚══════════════════════════════════════════════════════════════════════╝
 
 
 class TBModel(nn.Module):
@@ -1948,563 +1806,33 @@ class TBModel(nn.Module):
         return P_F_logits, P_B_logits
 
 
-def state_to_tensor(env, state):
-    """Convert ColorRampState to tensor representation"""
+def state_to_tensor(state):
+    """
+    Convert ColorRampState to tensor representation
+
+    Args:
+        state: ColorRampState object
+
+    Returns:
+        torch.Tensor: Encoded state tensor
+    """
     encoding = []
 
-    # Scale encoding (one-hot)
-    if state.scale is None:
-        scale_encoding = [0.0] * len(env.available_scales)
-    else:
-        scale_encoding = [0.0] * len(env.available_scales)
-        if state.scale in env.available_scales:
-            scale_idx = env.available_scales.index(state.scale)
-            scale_encoding[scale_idx] = 1.0
-    encoding.extend(scale_encoding)
+    # Scale encoding (normalized)
+    scale_val = state.scale if state.scale is not None else 0.0
+    encoding.append(scale_val / 20.0)  # Normalize assuming max scale ~20
 
-    # Color encoding (one-hot for each position)
-    for pos in range(env.max_colors):
+    # Colors encoding (position + color_id pairs)
+    max_colors = 5  # From your usage
+    for pos in range(max_colors):
         if pos in state.colors:
-            color_id = state.colors[pos]
-            color_encoding = [0.0] * env.num_color_choices
-            if 0 <= color_id < env.num_color_choices:
-                color_encoding[color_id] = 1.0
+            encoding.append((pos + 1) / max_colors)  # Position (normalized)
+            encoding.append(state.colors[pos] / 32.0)  # Color ID (normalized)
         else:
-            color_encoding = [0.0] * env.num_color_choices
-        encoding.extend(color_encoding)
+            encoding.append(0.0)  # No color at this position
+            encoding.append(0.0)
 
     # Step count (normalized)
-    max_steps = env.max_colors + 1  # scale + colors
-    step_encoding = [state.step_count / max_steps]
-    encoding.extend(step_encoding)
+    encoding.append(state.step_count / 6.0)  # Normalize assuming max ~6 steps
 
     return torch.tensor(encoding, dtype=torch.float32)
-
-
-class PolicyTrajectorySampler:
-    """Sample trajectories using learned policy with proper epsilon-greedy"""
-
-    def __init__(self, env, model=None, epsilon: float = 0.2):
-        self.env = env
-        self.model = model
-        self.epsilon = epsilon
-
-    def encode_action(
-        self, action: Tuple, max_colors: int = 3, num_color_choices: int = 8
-    ) -> int:
-        """Convert structured action to integer index for model"""
-        if action[0] == "scale":
-            return action[1]  # Scale actions: 0, 1, 2, 3, 4
-        elif action[0] == "color":
-            pos, color_id = action[1], action[2]
-            # Color actions start after scale actions
-            return 5 + pos * num_color_choices + color_id
-        else:
-            return 0
-
-    def decode_action_index(self, action_idx: int, valid_actions: List[Tuple]) -> Tuple:
-        """Convert integer index back to structured action"""
-        # Find the valid action that corresponds to this index
-        for valid_action in valid_actions:
-            if self.encode_action(valid_action) == action_idx:
-                return valid_action
-
-        # Fallback: return first valid action if no match
-        return valid_actions[0] if valid_actions else None
-
-    def sample_trajectory(self, max_steps: int = 20) -> List[Tuple]:
-        """Sample trajectory using epsilon-greedy policy"""
-        trajectory = []
-        state = self.env.get_initial_state()
-
-        for step in range(max_steps):
-            if self.env.is_terminal(state):
-                break
-
-            valid_actions = self.env.get_valid_actions(state)
-            if not valid_actions:
-                break
-
-            # EPSILON-GREEDY DECISION
-            if self.model is None or random.random() < self.epsilon:
-                # EXPLORATION: Random action
-                action = random.choice(valid_actions)
-
-            else:
-                # EXPLOITATION: Use learned policy
-                state_tensor = self.state_to_tensor(state)
-                P_F_logits, _ = self.model(state_tensor)
-
-                # Create action mask for valid actions only
-                action_mask = torch.full_like(P_F_logits, float("-inf"))
-
-                for valid_action in valid_actions:
-                    action_idx = self.encode_action(valid_action)
-                    if action_idx < len(action_mask):
-                        action_mask[action_idx] = (
-                            0.0  # Valid actions get 0, invalid get -inf
-                        )
-
-                # Apply mask and get probabilities
-                masked_logits = (
-                    P_F_logits + action_mask
-                )  # -inf masks out invalid actions
-                probs = F.softmax(masked_logits, dim=0)
-
-                # Sample from masked distribution
-                action_idx = torch.multinomial(probs, 1).item()
-
-                # Convert back to structured action
-                action = self.decode_action_index(action_idx, valid_actions)
-
-                # Safety check
-                if action not in valid_actions:
-                    print(f"⚠️ Policy selected invalid action {action}, using random")
-                    action = random.choice(valid_actions)
-
-            # Store (state, action) pair and advance
-            trajectory.append((state.copy(), action))
-            state = self.env.apply_action(state, action)
-
-        return trajectory
-
-    def state_to_tensor(self, state):
-        """Convert state to tensor (you'll need to implement this based on your state format)"""
-        # This depends on your specific state representation
-        # For ColorRampState, you might do something like:
-
-        encoding = [0.0] * 20  # Fixed size encoding
-
-        # Encode scale
-        if hasattr(state, "scale") and state.scale is not None:
-            encoding[0] = state.scale / 3.0  # Normalize
-
-        # Encode colors
-        if hasattr(state, "colors"):
-            for i, (pos, color_id) in enumerate(state.colors.items()):
-                if i < 3:  # Max 3 colors
-                    encoding[1 + i * 2] = pos / 3.0
-                    encoding[1 + i * 2 + 1] = color_id / 8.0
-
-        # Encode step count
-        if hasattr(state, "step_count"):
-            encoding[-1] = min(state.step_count / 10.0, 1.0)
-
-        return torch.tensor(encoding, dtype=torch.float32)
-
-    def sample_batch(self, batch_size: int, max_steps: int = 20) -> List[List[Tuple]]:
-        """Sample batch of trajectories"""
-        trajectories = []
-        for i in range(batch_size):
-            traj = self.sample_trajectory(max_steps)
-            trajectories.append(traj)
-        return trajectories
-
-    def get_action_statistics(self, num_trajectories: int = 100) -> dict:
-        """Analyze action selection statistics"""
-        exploration_count = 0
-        exploitation_count = 0
-
-        for _ in range(num_trajectories):
-            state = self.env.get_initial_state()
-
-            for step in range(10):  # Sample a few steps
-                if self.env.is_terminal(state):
-                    break
-
-                valid_actions = self.env.get_valid_actions(state)
-                if not valid_actions:
-                    break
-
-                # Check which branch would be taken
-                if self.model is None or random.random() < self.epsilon:
-                    exploration_count += 1
-                else:
-                    exploitation_count += 1
-
-                # Actually take action to advance state
-                action = random.choice(valid_actions)
-                state = self.env.apply_action(state, action)
-
-        total = exploration_count + exploitation_count
-        return {
-            "exploration_count": exploration_count,
-            "exploitation_count": exploitation_count,
-            "exploration_rate": exploration_count / total if total > 0 else 0,
-            "exploitation_rate": exploitation_count / total if total > 0 else 0,
-            "epsilon": self.epsilon,
-        }
-
-
-# Example usage and explanation
-def demonstrate_epsilon_greedy():
-    """Demonstrate how epsilon-greedy works"""
-
-    print("🎯 EPSILON-GREEDY EXPLANATION")
-    print("=" * 40)
-
-    epsilons = [0.0, 0.1, 0.5, 0.9, 1.0]
-
-    for eps in epsilons:
-        print(f"\nEpsilon = {eps}")
-        if eps == 0.0:
-            print("  → 100% EXPLOITATION (always use policy)")
-        elif eps == 1.0:
-            print("  → 100% EXPLORATION (always random)")
-        else:
-            print(
-                f"  → {eps * 100:.0f}% exploration, {(1 - eps) * 100:.0f}% exploitation"
-            )
-
-        # Simulate 100 decisions
-        exploration_decisions = sum(1 for _ in range(100) if random.random() < eps)
-        print(
-            f"  → In 100 decisions: ~{exploration_decisions} random, ~{100 - exploration_decisions} policy"
-        )
-
-    print(f"\n💡 KEY INSIGHTS:")
-    print(f"   • High ε (e.g., 0.8): More exploration, learns about new actions")
-    print(f"   • Low ε (e.g., 0.1): More exploitation, uses learned policy")
-    print(f"   • Common schedule: Start high ε, decay to low ε over training")
-    print(f"   • Balances exploration vs exploitation dilemma")
-
-
-def compare_sampling_strategies():
-    """Compare different sampling strategies"""
-
-    print(f"\n🔄 SAMPLING STRATEGY COMPARISON")
-    print("=" * 40)
-
-    strategies = [
-        ("Pure Random", 1.0),
-        ("High Exploration", 0.7),
-        ("Balanced", 0.3),
-        ("Low Exploration", 0.1),
-        ("Pure Exploitation", 0.0),
-    ]
-
-    for name, epsilon in strategies:
-        print(f"\n{name} (ε={epsilon}):")
-
-        if epsilon == 1.0:
-            print("  • Always takes random actions")
-            print("  • Good for: Initial exploration, discovering all possible actions")
-            print("  • Bad for: Using learned knowledge, convergence")
-
-        elif epsilon > 0.5:
-            print("  • Mostly random with some policy usage")
-            print("  • Good for: Early training, exploring new state regions")
-            print("  • Bad for: Exploiting good policies once found")
-
-        elif epsilon > 0.0:
-            print("  • Mostly policy with some randomness")
-            print("  • Good for: Balancing learning and performance")
-            print("  • Bad for: Pure performance (still makes mistakes)")
-
-        else:
-            print("  • Always follows learned policy")
-            print("  • Good for: Pure performance, evaluation")
-            print("  • Bad for: Discovering new strategies, avoiding local optima")
-
-
-if __name__ == "__main__":
-    demonstrate_epsilon_greedy()
-    compare_sampling_strategies()
-
-
-def trajectory_balance_loss(model: TBModel, trajectories, env):
-    """
-    Trajectory Balance Loss - mirroring HyperGrid implementation
-    """
-    if len(trajectories) == 0:
-        return torch.tensor(0.0, requires_grad=True)
-
-    total_loss = torch.tensor(0.0, requires_grad=True)
-
-    for traj in trajectories:
-        if len(traj) < 2:  # Skip invalid trajectories
-            continue
-
-        # ====================================================
-        # FORWARD path: Z_θ * ∏P_F(s_t|s_{t-1})
-        # ====================================================
-        log_forward = model.logZ
-
-        for step in range(len(traj) - 1):
-            current_state = traj[step]
-            next_state = traj[step + 1]
-
-            # Encode current state for neural network
-            current_tensor = state_to_tensor(env, current_state)
-
-            # Get forward policy logits
-            P_F_logits, _ = model(current_tensor)
-
-            # Find which action was taken
-            valid_actions = env.get_valid_actions(current_state)
-            action_taken = None
-
-            for action in valid_actions:
-                if env.apply_action(current_state, action) == next_state:
-                    action_taken = action
-                    break
-
-            if action_taken is not None:
-                # Mask invalid actions
-                action_mask = torch.tensor(
-                    [
-                        1.0 if a in valid_actions else 0.0
-                        for a in range(P_F_logits.shape[0])
-                    ]
-                )
-                masked_logits = P_F_logits.where(
-                    action_mask.bool(), torch.tensor(-100.0)
-                )
-
-                # Get probabilities
-                probs = F.softmax(masked_logits, dim=0)
-                log_forward = log_forward + torch.log(
-                    probs[action_taken].clamp(min=1e-8)
-                )
-
-        # ====================================================
-        # BACKWARD path: R(x) * ∏P_B(s_{t-1}|s_t)
-        # ====================================================
-        reward = env.get_reward(traj[-1])
-
-        # Handle zero rewards by using a small epsilon instead of log(0)
-        if reward <= 0:
-            reward = 1e-8
-
-        log_backward = torch.log(torch.tensor(reward, dtype=torch.float))
-
-        for step in range(len(traj) - 1, 0, -1):
-            current_state = traj[step]
-            prev_state = traj[step - 1]
-
-            # Encode current state
-            current_tensor = state_to_tensor(env, current_state)
-
-            # Get backward policy logits
-            _, P_B_logits = model(current_tensor)
-
-            # Find valid previous actions
-            valid_prev_actions = []
-            action_taken = None
-
-            for action in range(P_B_logits.shape[0]):
-                try:
-                    # Check if taking this action from prev_state leads to current_state
-                    if action in env.get_valid_actions(prev_state):
-                        test_next_state = env.apply_action(prev_state, action)
-                        if test_next_state == current_state:
-                            valid_prev_actions.append(action)
-                            action_taken = action
-                except:
-                    continue
-
-            if valid_prev_actions and action_taken is not None:
-                # Create mask and apply
-                prev_action_mask = torch.tensor(
-                    [
-                        1.0 if a in valid_prev_actions else 0.0
-                        for a in range(P_B_logits.shape[0])
-                    ]
-                )
-                masked_logits = P_B_logits.where(
-                    prev_action_mask.bool(), torch.tensor(-100.0)
-                )
-                probs = F.softmax(masked_logits, dim=0)
-
-                log_backward = log_backward + torch.log(
-                    probs[action_taken].clamp(min=1e-8)
-                )
-
-        # ====================================================
-        # Apply trajectory balance equation
-        # ====================================================
-        trajectory_loss = (log_forward - log_backward) ** 2
-        total_loss = total_loss + trajectory_loss
-
-    return total_loss / len(trajectories)
-
-
-def trajectory_balance_experiment(
-    env: BlenderColorRampEnvironment,
-    lr: float = 0.001,
-    hidden_dim: int = 128,
-    n_steps: int = 1000,
-    batch_size: int = 32,
-    epsilon: float = 0.3,
-    max_trajectory_steps: int = 20,
-):
-    """
-    Complete trajectory balance experiment - mirroring HyperGrid implementation
-    """
-
-    print(f"🚀 Training Trajectory Balance GFlowNet on Blender Environment")
-    print(f"   Hidden dim: {hidden_dim}")
-    print(f"   Learning rate: {lr}")
-    print(f"   Training steps: {n_steps}")
-    print(f"   Batch size: {batch_size}")
-
-    # ====================================================
-    # Setup Environment and Model
-    # ====================================================
-    dummy_state = env.get_initial_state()
-    state_dim = state_to_tensor(env, dummy_state).shape[0]
-    action_dim = len(env.available_scales) + env.max_colors * env.num_color_choices
-
-    print(f"   State dim: {state_dim}")
-    print(f"   Action dim: {action_dim}")
-
-    # ====================================================
-    # Create model and optimizer
-    # ====================================================
-    model = TBModel(state_dim, action_dim, hidden_dim)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    # ====================================================
-    # Create policy-based sampler
-    # ====================================================
-    sampler = PolicyTrajectorySampler(env, model, epsilon)
-
-    print(f"   Initial logZ: {model.logZ.item():.4f}")
-
-    # ====================================================
-    # Training Loop
-    # ====================================================
-    losses = []
-    log_z_values = []
-    all_trajectories = []
-    successful_trajectories = []
-
-    for step in range(n_steps):
-        # Sample trajectories using current policy
-        step_trajectories = sampler.sample_batch(batch_size, max_trajectory_steps)
-        all_trajectories.extend(step_trajectories)
-
-        # Collect successful trajectories
-        for traj in step_trajectories:
-            if len(traj) > 0 and env.get_reward(traj[-1]) > 0:
-                successful_trajectories.append(traj)
-
-        # ====================================================
-        # Update model
-        # ====================================================
-        loss = trajectory_balance_loss(model, step_trajectories, env)
-
-        optimizer.zero_grad()
-        loss.backward()
-
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-
-        optimizer.step()
-
-        loss_value = loss.item()
-        losses.append(loss_value)
-        log_z_values.append(model.logZ.item())
-
-        # Print progress
-        if step % 50 == 0:
-            success_count = sum(
-                1
-                for traj in step_trajectories
-                if len(traj) > 0 and env.get_reward(traj[-1]) > 0
-            )
-            success_rate = success_count / len(step_trajectories)
-            avg_length = sum(len(traj) for traj in step_trajectories) / len(
-                step_trajectories
-            )
-
-            print(
-                f"Step {step:4d}: Loss={loss_value:.4f}, LogZ={model.logZ.item():.3f}, "
-                f"Success={success_rate:.1%}, AvgLen={avg_length:.1f}, "
-                f"TotalSucc={len(successful_trajectories)}"
-            )
-
-    # ====================================================
-    # Final Evaluation
-    # ====================================================
-    print(f"🎯 Final evaluation...")
-
-    # Test final policy (no exploration)
-    test_sampler = PolicyTrajectorySampler(env, model, epsilon=0.0)
-    test_trajectories = test_sampler.sample_batch(100, max_trajectory_steps)
-
-    test_successful = sum(
-        1
-        for traj in test_trajectories
-        if len(traj) > 0 and env.get_reward(traj[-1]) > 0
-    )
-    test_success_rate = test_successful / len(test_trajectories)
-
-    # Final metrics
-    final_loss = losses[-1]
-    final_logZ = log_z_values[-1]
-
-    # Overall training success rate
-    total_successful = sum(
-        1 for traj in all_trajectories if len(traj) > 0 and env.get_reward(traj[-1]) > 0
-    )
-    overall_success_rate = total_successful / len(all_trajectories)
-
-    print(f"\n📊 Final Results:")
-    print(f"   Loss: {final_loss:.6f}")
-    print(f"   LogZ: {final_logZ:.4f}")
-    print(f"   Training Success: {overall_success_rate:.2%}")
-    print(f"   Test Success: {test_success_rate:.2%}")
-    print(f"   Total Trajectories: {len(all_trajectories)}")
-    print(f"   Successful Trajectories: {len(successful_trajectories)}")
-
-    return {
-        "model": model,
-        "losses": losses,
-        "log_z_values": log_z_values,
-        "successful_trajectories": successful_trajectories,
-        "test_success_rate": test_success_rate,
-        "overall_success_rate": overall_success_rate,
-        "final_loss": final_loss,
-    }
-
-
-def run_blender_experiment(env):
-    """
-    Run a simple Blender GFlowNet experiment
-
-    Example:
-        >>> env = create_blender_environment(max_colors=5)
-        >>> env.connect_blender(plane, modifier, nodes)
-        >>> results = run_blender_experiment(env)
-    """
-    print("🧪 Running Blender GFlowNet Experiment")
-
-    # Run experiment
-    results = trajectory_balance_experiment(
-        env, lr=0.001, hidden_dim=128, n_steps=1000, batch_size=32
-    )
-
-    # Basic visualization if successful trajectories found
-    if results["successful_trajectories"]:
-        print(
-            f"✅ Found {len(results['successful_trajectories'])} successful trajectories!"
-        )
-
-        # Show a few successful examples
-        for i, traj in enumerate(results["successful_trajectories"][:3]):
-            final_state = traj[-1]
-            print(
-                f"Success {i + 1}: Scale={final_state.scale}, Colors={final_state.colors}"
-            )
-    else:
-        print("❌ No successful trajectories found")
-
-    return results
-
-
-if __name__ == "__main__":
-    print("🧪 Blender GFlowNet Training Ready")
-    print("Usage:")
-    print("  results = run_blender_experiment(env)")
-    print("  results = trajectory_balance_experiment(env, lr=0.001, n_steps=500)")
