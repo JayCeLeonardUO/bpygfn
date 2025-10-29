@@ -58,6 +58,7 @@ def save_dir():
 
 
 # @aerial Color ramp configuration for Blender
+@pytest.fixture
 def color_ramp_blender_config():
     return {
         "nodes": [
@@ -292,3 +293,9 @@ def test_color_ramp(save_dir, color_ramp_blender_config):
     #     "history_file": history_path,
     #     "test_name": test_name,
     # }
+
+def valid_actions():
+
+
+def test_read_height_map():
+    from .. import blender_gfn_experiment

@@ -61,7 +61,7 @@ class SuperSimpleEnv(DiscreteEnv):
     ):
         """
         NOTE: the states that this env output are what the MLP will see
-        As in --they get put directally into the model with no preprocessing
+        As in --they get put directally into the models with no preprocessing
 
         Arguments:
             n_actions: int - number of action

@@ -289,42 +289,6 @@ class ColorRampState:
         return self.scale is not None and len(self.colors) >= max_colors
 
 
-@dataclass
-class ColorRampEnvironmentConfig:
-    """Configuration for ColorRamp environment"""
-
-    available_scales: List[float] = None
-    max_colors: int = 5
-    num_color_choices: int = 32
-
-    def __post_init__(self):
-        if self.available_scales is None:
-            self.available_scales = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0]
-
-    class DefaultConfigs:
-        """Factory for common ColorRamp configurations"""
-
-        @staticmethod
-        def default():
-            """Default configuration"""
-            return ColorRampEnvironmentConfig()
-
-        @staticmethod
-        def small():
-            """Small configuration for testing"""
-            return ColorRampEnvironmentConfig(
-                available_scales=[0.5, 1.0, 2.0], max_colors=3, num_color_choices=8
-            )
-
-        @staticmethod
-        def large():
-            """Large configuration for complex experiments"""
-            return ColorRampEnvironmentConfig(
-                available_scales=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0],
-                max_colors=8,
-                num_color_choices=64,
-            )
-
 
 @dataclass
 class ColorRampEnvironmentConfig:
@@ -1044,14 +1008,14 @@ class ColorRampTrajectorySampler:
 
     # ====================================================
     # Using state of the Model to sample Trajectorys
-    # (How we run mass infernect on the model)
+    # (How we run mass infernect on the models)
     # ====================================================
 
     def sample_policy_trajectory(
         self, model: TBModel, epsilon: float = 0.1, max_steps: int = 10
     ) -> List[Tuple[ColorRampState, int]]:
         """
-        Sample trajectory using model policy with epsilon-greedy
+        Sample trajectory using models policy with epsilon-greedy
 
         Args:
             model: TBModel for policy
@@ -1079,7 +1043,7 @@ class ColorRampTrajectorySampler:
                 # Explore: random action
                 action = random.choice(valid_actions)
             else:
-                # Exploit: use model policy
+                # Exploit: use models policy
                 state_tensor = ColorRampStateManager.state_to_tensor(
                     current_state, self.env_config
                 )
@@ -1128,7 +1092,7 @@ class ColorRampTrajectorySampler:
 
         Args:
             batch_size: Number of trajectories
-            use_policy: Whether to use model policy
+            use_policy: Whether to use models policy
             model: TBModel (required if use_policy=True)
             epsilon: Exploration rate for policy
 

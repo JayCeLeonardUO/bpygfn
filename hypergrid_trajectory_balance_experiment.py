@@ -817,7 +817,7 @@ def trajectory_balance_experiment(
         mlflow.log_param("state_dim", state_dim)
 
         # ====================================================
-        # Create model and optimizer
+        # Create models and optimizer
         # ====================================================
         model = TBModel(state_dim, hidden_dim)
         optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -859,7 +859,7 @@ def trajectory_balance_experiment(
                     successful_trajectories.append(traj)
 
             # ====================================================
-            # Update model
+            # Update models
             # ====================================================
 
             # Compute trajectory balance loss
@@ -979,7 +979,7 @@ def trajectory_balance_experiment(
         visualize_policy_heatmaps(model, env, save_path="policy_heatmaps.png")
         mlflow.log_artifact("policy_heatmaps.png")
 
-        # 5. Recent trajectory sample (what model is currently generating)
+        # 5. Recent trajectory sample (what models is currently generating)
         very_recent = (
             all_trajectories[-50:] if len(all_trajectories) > 50 else all_trajectories
         )
@@ -1095,7 +1095,7 @@ def trajectory_balance_experiment(
         else:
             print("❌ No successful trajectories found!")
 
-        # Save model weights
+        # Save models weights
         torch.save(model.state_dict(), "tb_model_weights.pth")
         mlflow.log_artifact("tb_model_weights.pth")
 
