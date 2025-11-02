@@ -9,12 +9,11 @@ import pytest# Load the JSON file
 from pathlib import Path
 # Get the directory where this script is located
 SCRIPT_DIR = Path(__file__).parent
-JSON_DIR = SCRIPT_DIR / 'json'
+JSON_DIR = SCRIPT_DIR / 'json_files'
 
 # Load resources using relative path
 with open(JSON_DIR / 'blender_config.json', 'r') as f:
     resources = json.load(f)
-
 
 # Create DataFrames from the tables
 color_df = pd.DataFrame(resources['color_palette'])

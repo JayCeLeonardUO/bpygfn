@@ -27,6 +27,8 @@ numpy-quaternion = "^2024.0.7"
 scikit-image = "^0.25.2"
 plotly = "^6.1.2"
 notebook = "^7.4.7"
+optuna = "^4.5.0"
+python-dotenv = "^1.2.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
