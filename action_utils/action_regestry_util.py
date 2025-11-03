@@ -305,27 +305,46 @@ class ActionRegistry:
 
             if encoding == EncodingScheme.FACTORIZED:
                 if validator is None:
+                    # No validator - all actions valid
                     for idx in info['indices']:
                         mask[idx] = True
                 else:
                     valid_combinations = validator()
 
                     if isinstance(valid_combinations, bool):
+                        # Boolean validator
                         for idx in info['indices']:
                             mask[idx] = valid_combinations
+
                     elif isinstance(valid_combinations, list):
+                        # List of valid combinations
                         factor_ranges = info['factor_ranges']
 
-                        for param_name, range_info in factor_ranges.items():
-                            start = range_info['start']
-                            values = range_info['values']
+                        # For each valid combination, enable BOTH factors
+                        for valid_combo in valid_combinations:
+                            if isinstance(valid_combo, dict):
+                                # Check each factor and set mask for this specific combination
+                                all_factors_valid = True
+                                factor_indices = []
 
-                            for i, value in enumerate(values):
-                                for valid_combo in valid_combinations:
-                                    if isinstance(valid_combo, dict):
-                                        if valid_combo.get(param_name) == value:
-                                            mask[start + i] = True
-                                            break
+                                for param_name, range_info in factor_ranges.items():
+                                    start = range_info['start']
+                                    values = range_info['values']
+
+                                    # Find the index for this parameter value
+                                    param_value = valid_combo.get(param_name)
+                                    if param_value in values:
+                                        idx = values.index(param_value)
+                                        factor_indices.append(start + idx)
+                                    else:
+                                        all_factors_valid = False
+                                        break
+
+                                # Enable all factor indices for this valid combination
+                                if all_factors_valid:
+                                    for idx in factor_indices:
+                                        mask[idx] = True
+
             else:  # ONE_HOT
                 if validator is None:
                     for idx in info['indices']:

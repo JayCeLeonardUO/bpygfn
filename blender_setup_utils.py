@@ -257,7 +257,7 @@ def set_colors_in_ramp(color_ramp_node, color_names: List[str], positions: List[
             element.color = color
 
 
-def load_blend(filepath:str):
+def load_blend(filepath: str):
     """
     Load a template .blend file (resets Blender state)
 
@@ -268,9 +268,24 @@ def load_blend(filepath:str):
         True if successful
     """
     from pathlib import Path
+    import gc
 
     if not Path(filepath).exists():
         raise FileNotFoundError(f"Template not found: {filepath}")
+
+    # Clear existing data to prevent memory leaks
+    # This is especially important when loading multiple files in succession
+    for mesh in bpy.data.meshes:
+        bpy.data.meshes.remove(mesh)
+
+    for material in bpy.data.materials:
+        bpy.data.materials.remove(material)
+
+    for image in bpy.data.images:
+        bpy.data.images.remove(image)
+
+    # Force garbage collection
+    gc.collect()
 
     # Load the blend file (this resets everything)
     bpy.ops.wm.open_mainfile(filepath=filepath)
@@ -279,6 +294,5 @@ def load_blend(filepath:str):
     print(f"✓ Loaded template: {filepath}")
     return True
 
-
-
-
+def save_blend(filepath:str):
+    bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True)
