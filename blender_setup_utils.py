@@ -212,7 +212,6 @@ def test_extract_heightmap_with_geometry_nodes():
 
 
 
-
 def set_colors_in_ramp(color_ramp_node, color_names: List[str], positions: List[float] = None):
     """
     Set colors on a color ramp node using color names

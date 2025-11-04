@@ -1,19 +1,5 @@
 from gfn_environments.single_color_ramp import *
 
-import bpy
-import os
-
-import bpy
-import os
-
-import bpy
-import os
-
-import bpy
-import os
-
-import bpy
-import os
 
 import bpy
 import os
@@ -118,3 +104,140 @@ def test_state():
 
     print("After add_color:", new_state)
 
+
+def test_state_serialization():
+    """
+    Test to inspect the tensor serialization of states.
+    Shows exactly what goes IN and OUT of the model.
+    """
+    from blender_setup_utils import save_blend
+
+    load_blend_single_color_ramp()
+    blender_api = BlenderTerrainAPI()
+
+    # Create trajectory from initial Blender state
+    trajectory = StepWExperimentDefinition.Trajectory(blender_api)
+
+    print("\n" + "=" * 80)
+    print("MODEL INPUT/OUTPUT SERIALIZATION TEST")
+    print("=" * 80)
+
+    # Print action encoding map at the beginning
+    print("\n" + "🗺️  ACTION ENCODING MAP")
+    print("─" * 80)
+    print("Flat Index → Action")
+    print("─" * 80)
+
+    action_dim = StepWExperimentDefinition.State.get_action_dim()
+    for flat_idx in range(action_dim):
+        action_name, value_idx = StepWExperimentDefinition.decode_action(flat_idx)
+        action_info = StepWExperimentDefinition.ACTIONS[action_name]
+
+        # Get the actual value if available
+        if 'valid_values' in action_info and value_idx < len(action_info['valid_values']):
+            actual_value = action_info['valid_values'][value_idx]
+            print(f"  [{flat_idx:3d}] → {action_name:15s} value_idx={value_idx:2d}  (value={actual_value})")
+        else:
+            print(f"  [{flat_idx:3d}] → {action_name:15s} value_idx={value_idx:2d}")
+
+    print("─" * 80)
+    print(f"Total action space size: {action_dim}")
+    print("=" * 80)
+
+    def print_tensor_compact(tensor, name="Tensor"):
+        """Print tensor in compact format, summarizing zeros"""
+        nonzero_mask = tensor != 0
+        num_nonzero = nonzero_mask.sum().item()
+        num_zeros = len(tensor) - num_nonzero
+
+        print(f"  Shape: {tensor.shape}")
+        print(f"  Non-zero: {num_nonzero}, Zeros: {num_zeros}")
+
+        if num_nonzero > 0:
+            nonzero_indices = torch.where(nonzero_mask)[0]
+            print(f"  Non-zero elements:")
+            for idx in nonzero_indices:
+                print(f"    [{idx.item():3d}] = {tensor[idx].item():.6f}")
+        else:
+            print(f"  All zeros")
+
+    def print_io(trajectory, step_num, action_taken=None):
+        """Print what goes into and out of the model"""
+
+        print(f"\n{'─' * 80}")
+        print(f"STEP {step_num}")
+        if action_taken:
+            print(f"Action taken: {action_taken.action_name} (value_idx={action_taken.value_idx})")
+        print(f"{'─' * 80}")
+
+        # MODEL INPUT
+        state_tensor = trajectory.get_state_tensor()
+        print(f"\n📥 MODEL INPUT (state_tensor):")
+        print_tensor_compact(state_tensor, "state_tensor")
+
+        # MODEL OUTPUT
+        if action_taken:
+            flat_idx = StepWExperimentDefinition.encode_action(
+                action_taken.action_name,
+                action_taken.value_idx
+            )
+
+            # Create example action tensor with this action selected
+            action_tensor = torch.zeros(StepWExperimentDefinition.State.get_action_dim())
+            action_tensor[flat_idx] = 1.0  # Mark which action was taken
+
+            print(f"\n📤 MODEL OUTPUT (action_tensor):")
+            print(f"  What model would output for this action:")
+            print_tensor_compact(action_tensor, "action_tensor")
+            print(f"  ")
+            print(f"  Action '{action_taken.action_name}' (value_idx={action_taken.value_idx})")
+            print(f"    → Encoded as flat index [{flat_idx}]")
+
+            # Verify encoding
+            decoded_name, decoded_value_idx = StepWExperimentDefinition.decode_action(flat_idx)
+            match = decoded_name == action_taken.action_name and decoded_value_idx == action_taken.value_idx
+            print(f"    → Decoding verification: {'✓ PASS' if match else '✗ FAIL'}")
+        else:
+            action_dim = StepWExperimentDefinition.State.get_action_dim()
+            print(f"\n📤 MODEL OUTPUT (action_tensor):")
+            print(f"  Shape: torch.Size([{action_dim}])")
+            print(f"  Model would output probability distribution over all {action_dim} actions")
+
+        return state_tensor, action_tensor if action_taken else None
+
+    # Initial state
+    print_io(trajectory, step_num=0)
+
+    # Step 1: Step W
+    action = StepWExperimentDefinition.Action(action_name='step_w', value_idx=0)
+    trajectory.step(action, reward=0.0)
+    print_io(trajectory, step_num=1, action_taken=action)
+
+    # Step 2: Step Scale
+    action = StepWExperimentDefinition.Action(action_name='step_scale', value_idx=0)
+    trajectory.step(action, reward=0.0)
+    print_io(trajectory, step_num=2, action_taken=action)
+
+    # Step 3: Add first color
+    action = StepWExperimentDefinition.Action(action_name='add_color', value_idx=5)
+    trajectory.step(action, reward=0.0)
+    print_io(trajectory, step_num=3, action_taken=action)
+
+    # Step 4: Add second color
+    action = StepWExperimentDefinition.Action(action_name='add_color', value_idx=12)
+    trajectory.step(action, reward=0.0)
+    print_io(trajectory, step_num=4, action_taken=action)
+
+    # Step 5: Add third color
+    action = StepWExperimentDefinition.Action(action_name='add_color', value_idx=20)
+    trajectory.step(action, reward=0.0)
+    print_io(trajectory, step_num=5, action_taken=action)
+
+    # Step 6: Stop
+    action = StepWExperimentDefinition.Action(action_name='stop', value_idx=0)
+    trajectory.step(action, reward=1.0)
+    print_io(trajectory, step_num=6, action_taken=action)
+
+    print("\n" + "=" * 80)
+    print("✅ Test complete!")
+    print("=" * 80)
