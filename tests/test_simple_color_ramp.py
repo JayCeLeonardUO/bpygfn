@@ -57,54 +57,6 @@ def screenshot_viewport_to_png(filepath: str, resolution_x: int = 800, resolutio
     print(f"Viewport screenshot saved to: {filepath}")
 
 
-def test_state():
-    api_instance = BlenderTerrainAPI()
-    state = get_initial_environment_state()
-    tensor = state.to_state_tensor()
-    state.apply_to_blender(blender_api=api_instance)
-
-    from blender_setup_utils import save_blend
-    save_blend(filepath="./tests/file_dump/test_state.blend")
-
-    # Screenshot the initial viewport
-    screenshot_viewport_to_png(filepath="./tests/file_dump/test_state_initial.png")
-
-    print("Initial state:", state)
-
-    # Apply an action (e.g., set noise_w parameter)
-    action_name = 'set_w'
-    value_idx = 2  # Pick an index from VALID_W
-    new_state = state.apply_action(action_name, value_idx)
-    new_state.execute_action_on_blender(api_instance, action_name, value_idx)
-
-    # Screenshot after first action
-    screenshot_viewport_to_png(filepath="./tests/file_dump/test_state_after_w.png")
-
-    print("After set_w:", new_state)
-
-    # Apply another action (e.g., set noise_scale parameter)
-    action_name = 'set_scale'
-    value_idx = 1  # Pick an index from VALID_SCALE
-    new_state = new_state.apply_action(action_name, value_idx)
-    new_state.execute_action_on_blender(api_instance, action_name, value_idx)
-
-    # Screenshot after second action
-    screenshot_viewport_to_png(filepath="./tests/file_dump/test_state_after_scale.png")
-
-    print("After set_scale:", new_state)
-
-    # Apply a color action
-    action_name = 'add_color'
-    value_idx = 5  # Pick a color from COLOR_PALETTE
-    new_state = new_state.apply_action(action_name, value_idx)
-    new_state.execute_action_on_blender(api_instance, action_name, value_idx)
-
-    # Screenshot after adding color
-    screenshot_viewport_to_png(filepath="./tests/file_dump/test_state_after_color.png")
-
-    print("After add_color:", new_state)
-
-
 def test_state_serialization():
     """
     Test to inspect the tensor serialization of states.
@@ -241,3 +193,130 @@ def test_state_serialization():
     print("\n" + "=" * 80)
     print("✅ Test complete!")
     print("=" * 80)
+
+
+from gfn_environments.single_color_ramp import *
+import torch
+import random
+
+
+
+
+
+
+
+# Now run your test
+from gfn_environments.single_color_ramp import *
+import torch
+import random
+
+
+def test_blender_env_to_tensor():
+    """Test serializing Blender environment to tensor with hex color values"""
+    load_blend_single_color_ramp()
+    blender_api = BlenderTerrainAPI()
+
+    print("=" * 80)
+    print("TEST: blender_env_to_tensor() with HEX colors")
+    print("=" * 80)
+
+    def rgba_to_hex(rgba):
+        """Convert RGBA tuple to hex integer"""
+        r = int(rgba[0] * 255)
+        g = int(rgba[1] * 255)
+        b = int(rgba[2] * 255)
+        return (r << 16) | (g << 8) | b
+
+    def print_tensor_readable(tensor, max_colors=32):
+        """Print tensor in human-readable format"""
+        w = tensor[0].item() * 100
+        scale = tensor[1].item() * 50
+        num_colors = int(tensor[-1].item() * max_colors)
+        print(f"raw_tensor:{tensor}")
+        print(f"[W={w:.2f}, Scale={scale:.2f}, ", end="")
+
+        # Print colors as hex
+        colors = []
+        for i in range(num_colors):
+            color_val = tensor[2 + i].item()
+            if color_val != -1.0:
+                # Denormalize to hex
+                hex_int = int(color_val * 16777215)
+                colors.append(f"0x{hex_int:06X}")
+            else:
+                colors.append("EMPTY")
+
+        print(f"Colors=[{', '.join(colors)}], NumColors={num_colors}]")
+
+    # Test 1: Initial state
+    print("\n--- Test 1: Initial state ---")
+    tensor = blender_api.blender_env_to_tensor()
+    print_tensor_readable(tensor)
+    print(f"Tensor shape: {tensor.shape}")
+    print(f"Expected: (35,) = [W, Scale, 32 colors, NumColors]")
+
+    # Test 2: After stepping W
+    print("\n--- Test 2: After stepping W by 0.5 ---")
+    blender_api.step_w(0.5)
+    tensor = blender_api.blender_env_to_tensor()
+    print_tensor_readable(tensor)
+
+    # Test 3: Add first color
+    print("\n--- Test 3: After adding first color (palette idx 5) ---")
+    first_color = StepWExperimentDefinition.COLOR_PALETTE[5]  # (0.3, 0.5, 0.7, 1.0)
+    first_hex = rgba_to_hex(first_color)
+    print(f"Adding color: RGB{first_color[:3]} = 0x{first_hex:06X}")
+    blender_api.stack_color_ramp(first_color, max_colors=32)
+    tensor = blender_api.blender_env_to_tensor()
+    print_tensor_readable(tensor)
+
+    # Test 4: Add second color
+    print("\n--- Test 4: After adding second color (palette idx 12) ---")
+    second_color = StepWExperimentDefinition.COLOR_PALETTE[12]  # (0.4, 0.6, 0.2, 1.0)
+    second_hex = rgba_to_hex(second_color)
+    print(f"Adding color: RGB{second_color[:3]} = 0x{second_hex:06X}")
+    blender_api.stack_color_ramp(second_color, max_colors=32)
+    tensor = blender_api.blender_env_to_tensor()
+    print_tensor_readable(tensor)
+
+    # Test 5: Add third color
+    print("\n--- Test 5: After adding third color (palette idx 20) ---")
+    third_color = StepWExperimentDefinition.COLOR_PALETTE[20]  # (0.6, 0.5, 0.3, 1.0)
+    third_hex = rgba_to_hex(third_color)
+    print(f"Adding color: RGB{third_color[:3]} = 0x{third_hex:06X}")
+    blender_api.stack_color_ramp(third_color, max_colors=32)
+    tensor = blender_api.blender_env_to_tensor()
+    print_tensor_readable(tensor)
+
+    # Test 6: Verify hex values are correct
+    print("\n--- Test 6: Verify hex conversion ---")
+    print(f"Color 1 normalized: {tensor[2].item():.6f}")
+    print(f"Color 1 hex: 0x{int(tensor[2].item() * 16777215):06X}")
+    print(f"Expected: 0x{first_hex:06X}")
+    print(f"Color 2 normalized: {tensor[3].item():.6f}")
+    print(f"Color 2 hex: 0x{int(tensor[3].item() * 16777215):06X}")
+    print(f"Expected: 0x{second_hex:06X}")
+
+    # Test 7: Custom max_colors
+    print("\n--- Test 7: With max_colors=8 ---")
+    tensor = blender_api.blender_env_to_tensor(max_colors=8)
+    print(f"Tensor shape: {tensor.shape}")
+    print(f"Expected: (11,) = [W, Scale, 8 colors, NumColors]")
+    print_tensor_readable(tensor, max_colors=8)
+
+    # Test 8: Custom empty_value
+    print("\n--- Test 8: With empty_value=0.0 ---")
+    tensor = blender_api.blender_env_to_tensor(empty_value=0.0)
+    print(f"Empty slot values (should be 0.0): {tensor[5:10].tolist()}")
+
+
+
+    print("\n" + "=" * 80)
+    print("TEST COMPLETE")
+    print("State representation: [W, Scale, Color1_hex, Color2_hex, ..., NumColors]")
+    print("Each color is a single normalized hex value (0xRRGGBB)")
+    print("=" * 80)
+
+
+
+

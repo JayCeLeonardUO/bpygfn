@@ -1,3 +1,5 @@
+from argparse import Action
+
 import bpy
 
 #TODO there are magic number for a bunch of stuff and I need to chainge that
@@ -263,7 +265,6 @@ def add_color_to_slot(slot_idx: int, color_name: str, max_colors: int):
 
 
 
-from action_utils.action_regestry_util import *
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict
 from datetime import datetime
@@ -291,6 +292,77 @@ from typing import List, Dict, Tuple
 
 class BlenderTerrainAPI:
     """API for controlling terrain generation in Blender"""
+    
+    def reset_env(self):
+        load_blend_single_color_ramp()
+
+    def blender_env_to_tensor(self, **config) -> torch.Tensor:
+        """
+        Read Blender environment and serialize to tensor with color history.
+
+        Reads the actual color ramp elements in order, not mapped to slots.
+        """
+
+        # Default config values
+        max_colors = config.get('max_colors', 32)
+        empty_value = config.get('empty_value', -1.0)
+        w_range = config.get('w_range', (0.0, 100.0))
+        scale_range = config.get('scale_range', (0.0, 50.0))
+
+        parts = []
+
+        # Read W and Scale from Blender
+        noise_w = self.get_noise_w()
+        noise_scale = self.get_noise_scale()
+
+        # Normalize to [0, 1]
+        w_normalized = (noise_w - w_range[0]) / (w_range[1] - w_range[0])
+        scale_normalized = (noise_scale - scale_range[0]) / (scale_range[1] - scale_range[0])
+
+        parts.append(torch.tensor([w_normalized], dtype=torch.float32))
+        parts.append(torch.tensor([scale_normalized], dtype=torch.float32))
+
+        # Read color ramp directly from Blender
+        node_group = bpy.data.node_groups[self.node_group_name]
+        color_ramp = node_group.nodes["TerrainColorRamp"]
+
+        # Check if default (use counter)
+        if "stack_call_count" not in color_ramp:
+            num_colors = 0
+            elements = []
+        else:
+            num_colors = color_ramp["stack_call_count"]
+            # Get actual elements sorted by position
+            elements = sorted(color_ramp.color_ramp.elements, key=lambda e: e.position)
+
+        # Color sequence: hex values normalized
+        color_sequence = torch.full((max_colors,), empty_value, dtype=torch.float32)
+
+        # Only take unique colors (remove duplicates at same position)
+        seen_positions = set()
+        color_idx = 0
+
+        for element in elements:
+            pos_key = round(element.position, 3)  # Round to avoid floating point issues
+            if pos_key not in seen_positions and color_idx < max_colors:
+                seen_positions.add(pos_key)
+
+                rgba = element.color
+                r = int(rgba[0] * 255)
+                g = int(rgba[1] * 255)
+                b = int(rgba[2] * 255)
+                hex_value = (r << 16) | (g << 8) | b
+
+                color_sequence[color_idx] = hex_value / 16777215.0
+                color_idx += 1
+
+        parts.append(color_sequence)
+
+        # Metadata - use actual color count from counter
+        parts.append(torch.tensor([num_colors / max_colors], dtype=torch.float32))
+
+        return torch.cat(parts)
+
     @staticmethod
     def get_heightmap():
         # Extract heightmap after action
@@ -453,6 +525,7 @@ class BlenderTerrainAPI:
         this will put the color on the right most slot of the color ramp
         will also shift all other colors to be equadistant to each other
         """
+
         node_group = bpy.data.node_groups[self.node_group_name]
         color_ramp = node_group.nodes["TerrainColorRamp"]
 
@@ -583,7 +656,6 @@ Terrain Action Space Registration
 Defines the action space by registering API calls to the action registry
 """
 from typing import List, Dict, Any
-from action_utils.action_regestry_util import ActionRegistry, ActionGroup, EncodingScheme
 
 
 # ============================================================================
@@ -609,622 +681,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum
 
 
-class ActionRegistry:
-    """Static configuration defining all possible actions and their valid values"""
-
-    class Phase(str, Enum):
-        """Phases of the generation process"""
-        PARAM_SELECTION = "param_selection"
-        COLOR_SELECTION = "color_selection"
-
-    # Define all valid values for each action type
-    VALID_W = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 50.0]
-    VALID_SCALE = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
-    MAX_COLORS = 32
-
-    # Color palette (RGBA tuples) - 32 terrain colors
-    COLOR_PALETTE = [
-        # Deep water (0-3)
-        (0.0, 0.0, 0.2, 1.0),  # 0: Deep ocean blue
-        (0.0, 0.1, 0.3, 1.0),  # 1: Deep blue
-        (0.0, 0.2, 0.4, 1.0),  # 2: Ocean blue
-        (0.1, 0.3, 0.5, 1.0),  # 3: Medium blue
-
-        # Shallow water (4-7)
-        (0.2, 0.4, 0.6, 1.0),  # 4: Light blue
-        (0.3, 0.5, 0.7, 1.0),  # 5: Shallow water
-        (0.4, 0.6, 0.7, 1.0),  # 6: Very shallow
-        (0.5, 0.7, 0.8, 1.0),  # 7: Beach water
-
-        # Beach/sand (8-11)
-        (0.9, 0.9, 0.7, 1.0),  # 8: Light sand
-        (0.9, 0.85, 0.6, 1.0),  # 9: Sand
-        (0.85, 0.8, 0.55, 1.0),  # 10: Dark sand
-        (0.8, 0.75, 0.5, 1.0),  # 11: Wet sand
-
-        # Grassland (12-15)
-        (0.4, 0.6, 0.2, 1.0),  # 12: Light grass
-        (0.3, 0.5, 0.2, 1.0),  # 13: Grass
-        (0.25, 0.45, 0.15, 1.0),  # 14: Dark grass
-        (0.2, 0.4, 0.1, 1.0),  # 15: Forest floor
-
-        # Forest (16-19)
-        (0.15, 0.35, 0.08, 1.0),  # 16: Dense forest
-        (0.2, 0.3, 0.1, 1.0),  # 17: Dark green
-        (0.15, 0.25, 0.08, 1.0),  # 18: Deep forest
-        (0.1, 0.2, 0.05, 1.0),  # 19: Very dark forest
-
-        # Hills/dirt (20-23)
-        (0.6, 0.5, 0.3, 1.0),  # 20: Light brown
-        (0.6, 0.4, 0.2, 1.0),  # 21: Brown
-        (0.5, 0.35, 0.2, 1.0),  # 22: Dark brown
-        (0.45, 0.3, 0.15, 1.0),  # 23: Dirt
-
-        # Rocky/mountain (24-27)
-        (0.5, 0.5, 0.5, 1.0),  # 24: Light gray rock
-        (0.4, 0.4, 0.4, 1.0),  # 25: Gray rock
-        (0.3, 0.3, 0.3, 1.0),  # 26: Dark rock
-        (0.25, 0.25, 0.25, 1.0),  # 27: Very dark rock
-
-        # Snow/ice (28-31)
-        (0.85, 0.85, 0.9, 1.0),  # 28: Light snow
-        (0.9, 0.9, 0.95, 1.0),  # 29: Snow
-        (0.95, 0.95, 0.98, 1.0),  # 30: Fresh snow
-        (1.0, 1.0, 1.0, 1.0),  # 31: Pure white snow
-    ]
-
-    # Pad to 32 colors if needed
-    while len(COLOR_PALETTE) < MAX_COLORS:
-        COLOR_PALETTE.append((0.5, 0.5, 0.5, 1.0))
-
-    VALID_COLOR_INDICES = list(range(len(COLOR_PALETTE)))
-
-    # Action definitions with direct function pointers
-    ACTIONS = {
-        'set_w': {
-            'valid_values': VALID_W,
-            'phase': Phase.PARAM_SELECTION,
-            'description': 'Set noise W parameter',
-            'execute': lambda blender_api, value: blender_api.set_noise_w(w=value)
-        },
-        'set_scale': {
-            'valid_values': VALID_SCALE,
-            'phase': Phase.PARAM_SELECTION,
-            'description': 'Set noise Scale parameter',
-            'execute': lambda blender_api, value: blender_api.set_noise_scale(scale=value)
-        },
-        'add_color': {# not selecting_slots... I gues this is ok
-            'valid_values': VALID_COLOR_INDICES,
-            'phase': Phase.COLOR_SELECTION,
-            'description': 'Add color to next available slot',
-            'execute': lambda blender_api, value, slot_idx: blender_api.add_color_to_slot(
-                slot_idx=slot_idx,
-                color_rgba=ActionRegistry.COLOR_PALETTE[value],
-                max_colors=ActionRegistry.MAX_COLORS
-            )
-        },
-        'stop': {
-            'valid_values': [0],
-            'phase': Phase.COLOR_SELECTION,
-            'description': 'Terminate trajectory',
-            'execute': None  # No Blender operation
-        }
-    }
-
-    @classmethod
-    def get_total_actions(cls) -> int: 
-        """Total number of possible actions across all types"""
-        return sum(len(info['valid_values']) for info in cls.ACTIONS.values())
-
-    @classmethod
-    def get_action_offset(cls, action_name: str) -> int:
-        """Starting index for this action type in flat action space"""
-        offset = 0
-        for name, info in cls.ACTIONS.items():
-            if name == action_name:
-                return offset
-            offset += len(info['valid_values'])
-        raise ValueError(f"Action {action_name} not found")
-
-    @classmethod
-    def decode_action(cls, action_idx: int) -> Tuple[str, int]:
-        """Convert flat action index to (action_name, value_index)"""
-        current_offset = 0
-        for name, info in cls.ACTIONS.items():
-            num_values = len(info['valid_values'])
-            if action_idx < current_offset + num_values:
-                value_idx = action_idx - current_offset
-                return name, value_idx
-            current_offset += num_values
-        raise ValueError(f"Invalid action index: {action_idx}")
-
-    @classmethod
-    def encode_action(cls, action_name: str, value_idx: int) -> int:
-        """Convert (action_name, value_index) to flat action index"""
-        offset = cls.get_action_offset(action_name)
-        return offset + value_idx
-
-
-class State(BaseModel):
-    """
-    Pydantic model for GFlowNet state.
-    Tracks the state of terrain generation matching Blender.
-    """
-
-    # Noise parameters
-    noise_w: Optional[float] = Field(None, description="Noise W parameter")
-    noise_scale: Optional[float] = Field(None, description="Noise Scale parameter")
-
-    # Color selection (slot index -> color palette index)
-    color_assignments: Dict[int, int] = Field(
-        default_factory=dict,
-        description="Mapping from slot index to color palette index"
-    )
-    num_colors_assigned: int = Field(0, ge=0)
-
-    # State management
-    current_phase: ActionRegistry.Phase = Field(ActionRegistry.Phase.PARAM_SELECTION)
-    is_terminal: bool = Field(False)
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    @field_validator('noise_w')
-    @classmethod
-    def validate_noise_w(cls, v):
-        if v is not None and v not in ActionRegistry.VALID_W:
-            raise ValueError(f"noise_w must be one of {ActionRegistry.VALID_W}")
-        return v
-
-    @field_validator('noise_scale')
-    @classmethod
-    def validate_noise_scale(cls, v):
-        if v is not None and v not in ActionRegistry.VALID_SCALE:
-            raise ValueError(f"noise_scale must be one of {ActionRegistry.VALID_SCALE}")
-        return v
-
-    @model_validator(mode='after')
-    def update_phase(self):
-        """Auto-transition to color selection when params are set"""
-        if self.noise_w is not None and self.noise_scale is not None:
-            self.current_phase = ActionRegistry.Phase.COLOR_SELECTION
-        return self
-
-    def to_state_tensor(self) -> torch.Tensor:
-        """Convert to STATE tensor (network INPUT)"""
-        parts = []
-
-        # Noise W parameter (one-hot)
-        w_onehot = torch.zeros(len(ActionRegistry.VALID_W))
-        if self.noise_w is not None:
-            w_idx = ActionRegistry.VALID_W.index(self.noise_w)
-            w_onehot[w_idx] = 1
-        parts.append(w_onehot)
-
-        # Noise Scale parameter (one-hot)
-        scale_onehot = torch.zeros(len(ActionRegistry.VALID_SCALE))
-        if self.noise_scale is not None:
-            scale_idx = ActionRegistry.VALID_SCALE.index(self.noise_scale)
-            scale_onehot[scale_idx] = 1
-        parts.append(scale_onehot)
-
-        # Color slot occupancy (binary vector for each slot)
-        slot_occupancy = torch.zeros(ActionRegistry.MAX_COLORS)
-        for slot_idx in self.color_assignments.keys():
-            slot_occupancy[slot_idx] = 1
-        parts.append(slot_occupancy)
-
-        # Metadata
-        parts.append(torch.tensor([
-            self.num_colors_assigned / ActionRegistry.MAX_COLORS,
-            1.0 if self.noise_w is not None else 0.0,
-            1.0 if self.noise_scale is not None else 0.0,
-            1.0 if self.current_phase == ActionRegistry.Phase.COLOR_SELECTION else 0.0
-        ], dtype=torch.float32))
-
-        return torch.cat(parts)
-
-    def to_action_mask(self) -> torch.Tensor:
-        """Convert to ACTION mask (valid actions for network OUTPUT)"""
-        mask = torch.zeros(ActionRegistry.get_total_actions(), dtype=torch.bool)
-
-        if self.current_phase == ActionRegistry.Phase.PARAM_SELECTION:
-            if self.noise_w is None:
-                offset = ActionRegistry.get_action_offset('set_w')
-                mask[offset:offset + len(ActionRegistry.VALID_W)] = True
-
-            if self.noise_scale is None:
-                offset = ActionRegistry.get_action_offset('set_scale')
-                mask[offset:offset + len(ActionRegistry.VALID_SCALE)] = True
-
-        elif self.current_phase == ActionRegistry.Phase.COLOR_SELECTION:
-            if self.num_colors_assigned < ActionRegistry.MAX_COLORS:
-                color_offset = ActionRegistry.get_action_offset('add_color')
-                mask[color_offset:color_offset + len(ActionRegistry.VALID_COLOR_INDICES)] = True
-
-            if self.num_colors_assigned > 0:
-                stop_offset = ActionRegistry.get_action_offset('stop')
-                mask[stop_offset] = True
-
-        return mask
-
-    def apply_action(self, action_name: str, value_idx: int) -> 'State':
-        """Apply action and return new state (immutable)"""
-        value = ActionRegistry.ACTIONS[action_name]['valid_values'][value_idx]
-        new_data = self.model_dump()
-
-        if action_name == 'set_w':
-            new_data['noise_w'] = value
-        elif action_name == 'set_scale':
-            new_data['noise_scale'] = value
-        elif action_name == 'add_color':
-            color_palette_idx = value
-            next_slot = self.num_colors_assigned
-            new_data['color_assignments'][next_slot] = color_palette_idx
-            new_data['num_colors_assigned'] += 1
-        elif action_name == 'stop':
-            new_data['is_terminal'] = True
-
-        return State(**new_data)
-
-    def execute_action_on_blender(self, blender_api, action_name: str, value_idx: int):
-        """
-        Execute a single action directly on Blender.
-
-        Args:
-            blender_api: BlenderTerrainAPI instance
-            action_name: Name of action to execute
-            value_idx: Index into valid_values
-        """
-        action_info = ActionRegistry.ACTIONS[action_name]
-        execute_fn = action_info['execute']
-
-        if execute_fn is None:
-            return  # Stop action has no Blender operation
-
-        value = action_info['valid_values'][value_idx]
-
-        if action_name == 'add_color':
-            # Need current slot index for color placement
-            execute_fn(blender_api, value, self.num_colors_assigned)
-        else:
-            execute_fn(blender_api, value)
-
-    def apply_to_blender(self, blender_api):
-        """
-        Apply entire state to Blender at once.
-
-        Args:
-            blender_api: BlenderTerrainAPI instance
-        """
-        # Set noise parameters if both are set
-        if self.noise_w is not None and self.noise_scale is not None:
-            blender_api.set_noise_params(w=self.noise_w, scale=self.noise_scale)
-
-        # Set color ramp if colors assigned
-        if self.color_assignments:
-            colors_dict = {
-                slot_idx: ActionRegistry.COLOR_PALETTE[palette_idx]
-                for slot_idx, palette_idx in self.color_assignments.items()
-            }
-            blender_api.set_color_ramp(colors_dict, max_colors=ActionRegistry.MAX_COLORS)
-
-    @classmethod
-    def get_state_tensor_dim(cls) -> int:
-        """Dimension of state tensor (network INPUT)"""
-        return (len(ActionRegistry.VALID_W) +
-                len(ActionRegistry.VALID_SCALE) +
-                ActionRegistry.MAX_COLORS +
-                4)
-
-    @classmethod
-    def get_action_tensor_dim(cls) -> int:
-        """Dimension of action tensor (network OUTPUT)"""
-        return ActionRegistry.get_total_actions()
-
-
-def get_initial_environment_state() -> 'State':
-    return State(
-        noise_w=None,
-        noise_scale=None,
-        color_assignments={},
-        num_colors_assigned=0,
-        current_phase=ActionRegistry.Phase.PARAM_SELECTION,
-        is_terminal=False,
-    )
-
-import pickle
-from datetime import datetime
-from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
-import torch
-
-
-class TrajectoryRecord(BaseModel):
-    """Schema for a single trajectory record with heightmaps at each step"""
-    id: int
-    timestamp: datetime = Field(default_factory=datetime.now)
-    trajectory_data: bytes  # Pickled list of trajectory steps
-    final_state_data: bytes  # Pickled final State
-    heightmaps_data: bytes  # Pickled list of heightmap tensors (one per step)
-    trajectory_len: int
-
-    # Summary info for quick access
-    noise_w: Optional[float] = None
-    noise_scale: Optional[float] = None
-    num_colors: int = 0
-    is_terminal: bool = False
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    @classmethod
-    def from_trajectory(cls, trajectory_id: int, trajectory: List[Dict],
-                        final_state: State, heightmaps: List[torch.Tensor]) -> 'TrajectoryRecord':
-        """
-        Create record from trajectory, final state, and heightmaps at each step
-
-        Args:
-            trajectory_id: Unique ID for this trajectory
-            trajectory: List of trajectory steps (from sample_trajectory)
-            final_state: Final State after trajectory completes
-            heightmaps: List of heightmap tensors, one for each step
-        """
-        return cls(
-            id=trajectory_id,
-            timestamp=datetime.now(),
-            trajectory_data=pickle.dumps(trajectory),
-            final_state_data=pickle.dumps(final_state.model_dump()),
-            heightmaps_data=pickle.dumps(heightmaps),
-            trajectory_len=len(trajectory),
-            noise_w=final_state.noise_w,
-            noise_scale=final_state.noise_scale,
-            num_colors=final_state.num_colors_assigned,
-            is_terminal=final_state.is_terminal
-        )
-
-    def get_trajectory(self) -> List[Dict]:
-        """Deserialize and return the trajectory data"""
-        return pickle.loads(self.trajectory_data)
-
-    def get_final_state(self) -> State:
-        """Deserialize and return the final state"""
-        state_dict = pickle.loads(self.final_state_data)
-        return State(**state_dict)
-
-    def get_heightmaps(self) -> List[torch.Tensor]:
-        """Deserialize and return all heightmaps"""
-        return pickle.loads(self.heightmaps_data)
-
-    def get_heightmap_at_step(self, step_idx: int) -> Optional[torch.Tensor]:
-        """Get heightmap at a specific step (with bounds checking)"""
-        heightmaps = self.get_heightmaps()
-        if step_idx < 0 or step_idx >= len(heightmaps):
-            return None
-        return heightmaps[step_idx]
-
-    def to_dict(self) -> Dict:
-        """Convert to dict for DataFrame"""
-        return {
-            'id': self.id,
-            'timestamp': self.timestamp,
-            'trajectory_len': self.trajectory_len,
-            'noise_w': self.noise_w,
-            'noise_scale': self.noise_scale,
-            'num_colors': self.num_colors,
-            'is_terminal': self.is_terminal
-        }
-
-
-def sample_random_trajectory() -> TrajectoryRecord:
-    """
-    resets blender state
-
-    samples a random trajectory and returns it
-
-    """
-
-    # set blender to base state
-    load_blend_single_color_ramp()
-    # how do I get the base state from State?
-
-    return None
-
-
-class ReplayBuffer(BaseModel):
-    """
-    Replay buffer storing GFlowNet trajectories with heightmaps at each step.
-    """
-    capacity: int = 10000
-    records: List[TrajectoryRecord] = Field(default_factory=list)
-    reward_options: Dict[str,Callable] = Field(default_factory=dict)
-    rewards: Dict[int, Dict[str, float]] = Field(default_factory=dict)  # id -> {reward_name: value}
-    next_id: int = 0
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    def get_heightmap_at_step(self, trajectory_id: int, step_idx: int) -> Optional[torch.Tensor]:
-        """Get heightmap at a specific step (with bounds checking)"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                # Check bounds before calling record method
-                if step_idx < 0 or step_idx >= record.trajectory_len:
-                    return None
-                heightmaps = record.get_heightmaps()
-                return heightmaps[step_idx]
-        return None
-
-
-    def register_reward(self,name:str,reward:Callable):
-        # I should make sure this is callable but what ever
-        self.reward_options[name] = reward
-
-    def add_trajectory(self, trajectory: List[Dict], final_state: State,
-                       heightmaps: List[torch.Tensor]) -> int:
-        """
-        Add a trajectory to the buffer with heightmaps at each step
-
-        Args:
-            trajectory: List of trajectory steps from sample_trajectory
-            final_state: Final State after trajectory
-            heightmaps: List of heightmap tensors, one for each step
-
-        Returns:
-            Trajectory ID
-        """
-        if len(heightmaps) != len(trajectory):
-            raise ValueError(
-                f"Number of heightmaps ({len(heightmaps)}) must match trajectory length ({len(trajectory)})")
-
-        trajectory_id = self.next_id
-        self.next_id += 1
-
-        # Create record
-        record = TrajectoryRecord.from_trajectory(trajectory_id, trajectory, final_state, heightmaps)
-        self.records.append(record)
-
-        # Enforce capacity - remove oldest if over
-        if len(self.records) > self.capacity:
-            removed = self.records.pop(0)
-            # Clean up associated data
-            if removed.id in self.rewards:
-                del self.rewards[removed.id]
-
-        for reward_key in self.reward_options.keys():
-            self.add_reward(trajectory_id, reward_key, self.reward_options[reward_key](record))
-
-        return trajectory_id
-
-    def add_reward(self, trajectory_id: int, reward_name: str, reward_value: float):
-        """Add a single reward for a trajectory"""
-        if trajectory_id not in self.rewards:
-            self.rewards[trajectory_id] = {}
-        self.rewards[trajectory_id][reward_name] = reward_value
-
-    def add_rewards(self, trajectory_id: int, rewards_dict: Dict[str, float]):
-        """Add multiple rewards for a trajectory"""
-        if trajectory_id not in self.rewards:
-            self.rewards[trajectory_id] = {}
-        self.rewards[trajectory_id].update(rewards_dict)
-
-    def get_trajectory(self, trajectory_id: int) -> Optional[List[Dict]]:
-        """Get trajectory steps by ID"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                return record.get_trajectory()
-        return None
-
-    def get_final_state(self, trajectory_id: int) -> Optional[State]:
-        """Get final state by ID"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                return record.get_final_state()
-        return None
-
-    def get_heightmaps(self, trajectory_id: int) -> Optional[List[torch.Tensor]]:
-        """Get all heightmaps for a trajectory"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                return record.get_heightmaps()
-        return None
-
-    def get_heightmap_at_step(self, trajectory_id: int, step_idx: int) -> Optional[torch.Tensor]:
-        """Get heightmap at a specific step"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                return record.get_heightmap_at_step(step_idx)
-        return None
-
-    def get_trajectory_summary(self, trajectory_id: int) -> str:
-        """Get human-readable summary"""
-        for record in self.records:
-            if record.id == trajectory_id:
-                traj = record.get_trajectory()
-                heightmaps = record.get_heightmaps()
-
-                summary = f"Trajectory {trajectory_id}:\n"
-                summary += f"  Timestamp: {record.timestamp}\n"
-                summary += f"  Length: {record.trajectory_len} steps\n"
-                summary += f"  Final state: w={record.noise_w}, scale={record.noise_scale}, colors={record.num_colors}\n"
-                summary += f"  Terminal: {record.is_terminal}\n"
-
-                # Rewards
-                if trajectory_id in self.rewards:
-                    summary += f"  Rewards: {self.rewards[trajectory_id]}\n"
-
-                # Actions with heightmap info
-                summary += "  Actions (with heightmaps):\n"
-                for i, step in enumerate(traj):
-                    action_name = step['action_name']
-                    value_idx = step['value_idx']
-                    value = ActionRegistry.ACTIONS[action_name]['valid_values'][value_idx]
-                    prob = step['prob']
-
-                    hm = heightmaps[i]
-                    summary += f"    {i}: {action_name:15s} = {str(value):10s} (p={prob:.4f}) "
-                    summary += f"→ hm: mean={hm.mean():.4f}, std={hm.std():.4f}\n"
-
-                return summary
-
-        return f"Trajectory {trajectory_id} not found"
-
-    @property
-    def df(self):
-        """Get DataFrame of all trajectories with rewards"""
-        import pandas as pd
-
-        if not self.records:
-            return pd.DataFrame(columns=['id', 'timestamp', 'trajectory_len',
-                                         'noise_w', 'noise_scale', 'num_colors', 'is_terminal'])
-
-        # Get trajectory metadata
-        rows = [record.to_dict() for record in self.records]
-        df = pd.DataFrame(rows)
-
-        # Add reward columns
-        if self.rewards:
-            reward_rows = []
-            for traj_id, reward_dict in self.rewards.items():
-                reward_rows.append({'id': traj_id, **reward_dict})
-            df_rewards = pd.DataFrame(reward_rows)
-            df = df.merge(df_rewards, on='id', how='left')
-
-        return df
-
-    def sample_batch(self, batch_size: int,
-                     reward_threshold: Optional[float] = None,
-                     reward_name: str = 'variance') -> List[int]:
-        """
-        Sample a batch of trajectory IDs
-
-        Args:
-            batch_size: Number of trajectories to sample
-            reward_threshold: If provided, only sample trajectories above this reward
-            reward_name: Which reward to filter by
-
-        Returns:
-            List of trajectory IDs
-        """
-        import random
-
-        # Get eligible trajectory IDs
-        eligible_ids = []
-        for record in self.records:
-            if reward_threshold is not None:
-                if record.id in self.rewards and reward_name in self.rewards[record.id]:
-                    if self.rewards[record.id][reward_name] >= reward_threshold:
-                        eligible_ids.append(record.id)
-            else:
-                eligible_ids.append(record.id)
-
-        # Sample
-        if len(eligible_ids) <= batch_size:
-            return eligible_ids
-        return random.sample(eligible_ids, batch_size)
-
-    def __len__(self) -> int:
-        return len(self.records)
-
-    def __repr__(self) -> str:
-        return f"ReplayBuffer(size={len(self.records)}/{self.capacity}, rewards={len(self.rewards)})"
 
 
 class StepWExperimentDefinition:
@@ -1579,3 +1035,171 @@ class StepWExperimentDefinition:
         def __len__(self) -> int:
             """Length of trajectory (number of actions taken)"""
             return len(self.actions)
+
+
+from pydantic import BaseModel, Field
+from typing import List, Tuple, Callable, Optional, Dict
+import torch
+
+
+class ActionDefinition(BaseModel):
+    """Defines a single action with its properties"""
+    action_key: str
+    value: float | int
+    flat_index: int
+    execute_fn: Optional[Callable] = Field(default=None, exclude=True)  # Not serialized
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def to_one_hot(self, action_dim: int) -> torch.Tensor:
+        """Convert this action to a one-hot tensor"""
+        one_hot = torch.zeros(action_dim)
+        one_hot[self.flat_index] = 1.0
+        return one_hot
+
+    def execute(self, blender_api, **kwargs):
+        """Execute this action"""
+        if self.execute_fn is None:
+            return  # stop action
+        self.execute_fn(blender_api, self.value, **kwargs)
+
+
+class v2StepWEnv(BaseModel):
+    """Environment definition using Pydantic"""
+
+    description: str = "Step w and scale in the noise at any time"
+    step_w_values: List[float] = Field(default=[2.0])
+    step_scale_values: List[float] = Field(default=[0.1])
+    max_colors: int = 32
+
+    # Color palette
+    color_palette: List[Tuple[float, float, float, float]] = Field(default_factory=lambda: [
+        # Deep water (0-3)
+        (0.0, 0.0, 0.2, 1.0),  # 0: Deep ocean blue
+        (0.0, 0.1, 0.3, 1.0),  # 1: Deep blue
+        (0.0, 0.2, 0.4, 1.0),  # 2: Ocean blue
+        (0.1, 0.3, 0.5, 1.0),  # 3: Medium blue
+        # Shallow water (4-7)
+        (0.2, 0.4, 0.6, 1.0),  # 4: Light blue
+        (0.3, 0.5, 0.7, 1.0),  # 5: Shallow water
+        (0.4, 0.6, 0.7, 1.0),  # 6: Very shallow
+        (0.5, 0.7, 0.8, 1.0),  # 7: Beach water
+        # Beach/sand (8-11)
+        (0.9, 0.9, 0.7, 1.0),  # 8: Light sand
+        (0.9, 0.85, 0.6, 1.0),  # 9: Sand
+        (0.85, 0.8, 0.55, 1.0),  # 10: Dark sand
+        (0.8, 0.75, 0.5, 1.0),  # 11: Wet sand
+        # Grassland (12-15)
+        (0.4, 0.6, 0.2, 1.0),  # 12: Light grass
+        (0.3, 0.5, 0.2, 1.0),  # 13: Grass
+        (0.25, 0.45, 0.15, 1.0),  # 14: Dark grass
+        (0.2, 0.4, 0.1, 1.0),  # 15: Forest floor
+        # Forest (16-19)
+        (0.15, 0.35, 0.08, 1.0),  # 16: Dense forest
+        (0.2, 0.3, 0.1, 1.0),  # 17: Dark green
+        (0.15, 0.25, 0.08, 1.0),  # 18: Deep forest
+        (0.1, 0.2, 0.05, 1.0),  # 19: Very dark forest
+        # Hills/dirt (20-23)
+        (0.6, 0.5, 0.3, 1.0),  # 20: Light brown
+        (0.6, 0.4, 0.2, 1.0),  # 21: Brown
+        (0.5, 0.35, 0.2, 1.0),  # 22: Dark brown
+        (0.45, 0.3, 0.15, 1.0),  # 23: Dirt
+        # Rocky/mountain (24-27)
+        (0.5, 0.5, 0.5, 1.0),  # 24: Light gray rock
+        (0.4, 0.4, 0.4, 1.0),  # 25: Gray rock
+        (0.3, 0.3, 0.3, 1.0),  # 26: Dark rock
+        (0.25, 0.25, 0.25, 1.0),  # 27: Very dark rock
+        # Snow/ice (28-31)
+        (0.85, 0.85, 0.9, 1.0),  # 28: Light snow
+        (0.9, 0.9, 0.95, 1.0),  # 29: Snow
+        (0.95, 0.95, 0.98, 1.0),  # 30: Fresh snow
+        (1.0, 1.0, 1.0, 1.0),  # 31: Pure white snow
+    ])
+
+    # This will be populated in __init__
+    tensor_to_action: Dict[int, ActionDefinition] = Field(default_factory=dict)
+    n_actions: int = 0
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        # Pad color palette to max_colors
+        while len(self.color_palette) < self.max_colors:
+            self.color_palette.append((0.5, 0.5, 0.5, 1.0))
+
+        # Build tensor_to_action mapping
+        self._build_tensor_to_action()
+
+    def _build_tensor_to_action(self):
+        """Build the mapping from flat index to ActionDefinition"""
+        idx = 0
+
+        # Import here to avoid circular dependency issues
+        # You'll need to inject these functions or make them methods
+
+        # Step W actions
+        for value in self.step_w_values:
+            self.tensor_to_action[idx] = ActionDefinition(
+                action_key='step_w',
+                value=value,
+                flat_index=idx,
+                execute_fn=lambda api, v: api.step_w(v)
+            )
+            idx += 1
+
+        # Step Scale actions
+        for value in self.step_scale_values:
+            self.tensor_to_action[idx] = ActionDefinition(
+                action_key='step_scale',
+                value=value,
+                flat_index=idx,
+                execute_fn=lambda api, v: api.step_noise_scale(v)
+            )
+            idx += 1
+
+        # Add Color actions
+        for color_idx in range(len(self.color_palette)):
+            palette_idx = color_idx
+            self.tensor_to_action[idx] = ActionDefinition(
+                action_key='add_color',
+                value=color_idx,
+                flat_index=idx,
+                execute_fn=lambda api, v, **kw: api.stack_color_ramp(
+                    color_rgba=self.color_palette[v],
+                    max_colors=self.max_colors
+                )
+            )
+            idx += 1
+
+        # Stop action
+        self.tensor_to_action[idx] = ActionDefinition(
+            action_key='stop',
+            value=0,
+            flat_index=idx,
+            execute_fn=None
+        )
+        idx += 1
+
+        self.n_actions = idx
+
+    def one_hot_to_action(self, one_hot_tensor: torch.Tensor) -> ActionDefinition:
+        """Convert one-hot tensor to ActionDefinition"""
+        idx = torch.argmax(one_hot_tensor).item()
+        return self.tensor_to_action[idx]
+
+    def action_to_one_hot(self, action_key: str, value: float | int) -> torch.Tensor:
+        """Convert action key and value to one-hot tensor"""
+        for idx, action_def in self.tensor_to_action.items():
+            if action_def.action_key == action_key and action_def.value == value:
+                return action_def.to_one_hot(self.n_actions)
+        raise ValueError(f"Action {action_key}={value} not found")
+
+    def execute_one_hot_action(self, blender_api, one_hot_tensor: torch.Tensor, **kwargs):
+        """Execute action from one-hot tensor"""
+        action_def = self.one_hot_to_action(one_hot_tensor)
+        action_def.execute(blender_api, **kwargs)
+
