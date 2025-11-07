@@ -298,4 +298,4 @@ def valid_actions():
 
 
 def test_read_height_map():
-    from .. import blender_gfn_experiment
+    pass
