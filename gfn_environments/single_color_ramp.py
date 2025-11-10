@@ -111,7 +111,7 @@ THIS_DIR = Path(__file__).parent
 
 def load_blend_single_color_ramp():
     """Load the single color ramp template from the same directory as this file"""
-    blend_path = THIS_DIR / "single_color_ramp.blend"
+    blend_path = THIS_DIR / "files"/ "single_color_ramp.blend"
     load_blend(str(blend_path))
 
 

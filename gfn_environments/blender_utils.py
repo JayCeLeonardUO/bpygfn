@@ -33,6 +33,7 @@ class BlenderTensorUtility:
         Returns:
             2D tensor of height values, or None if extraction fails
         """
+
         try:
             # Force scene update
             bpy.context.view_layer.update()
@@ -80,6 +81,7 @@ class BlenderTensorUtility:
         Returns:
             2D tensor of height values, or None if object not found or extraction fails
         """
+
         # Find object by name
         plane = bpy.data.objects.get(object_name)
 
@@ -125,7 +127,6 @@ class BlenderTensorUtility:
             print(f"❌ Error saving Blender state: {e}")
             return False
 
-# Tests
 
 def load_blend(filepath: str):
     """
@@ -136,34 +137,24 @@ def load_blend(filepath: str):
 
     Returns:
         True if successful
-    Read blend: "/home/jpleona/jpleona_c/bpygfn/gfn_environments/single_color_ramp.blend"    
     """
-
     from pathlib import Path
-    import gc
+    from IPython.utils.capture import capture_output
 
     if not Path(filepath).exists():
         raise FileNotFoundError(f"Template not found: {filepath}")
 
-    # Clear existing data to prevent memory leaks
-    # This is especially important when loading multiple files in succession
-    for mesh in bpy.data.meshes:
-        bpy.data.meshes.remove(mesh)
+    # Capture all output from the load operation
+    with capture_output() as captured:
+        bpy.ops.wm.open_mainfile(filepath=filepath)
+        bpy.context.view_layer.update()
 
-    for material in bpy.data.materials:
-        bpy.data.materials.remove(material)
-
-    for image in bpy.data.images:
-        bpy.data.images.remove(image)
-
-    # Force garbage collection
-    gc.collect()
-
-    # Load the blend file (this resets everything)
-    bpy.ops.wm.open_mainfile(filepath=filepath)
-    bpy.context.view_layer.update()
+    # captured.stdout and captured.stderr contain the output
+    # but we're just discarding it
 
     return True
+
+
 
 def save_blend(filepath:str):
     bpy.ops.wm.save_as_mainfile(filepath=filepath, compress=True)
