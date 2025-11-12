@@ -13,8 +13,6 @@ import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 import torch.optim as optim
 from tqdm import tqdm
-
-
 # ====================================================
 # HyperGrid Environment
 # ====================================================
@@ -1107,7 +1105,6 @@ def trajectory_balance_experiment(
         print(f"   Total Trajectories: {len(all_trajectories)}")
 
         return final_loss
-
 
 # ====================================================
 # Hyperparameter Sweep
